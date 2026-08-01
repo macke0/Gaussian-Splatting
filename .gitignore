@@ -1,0 +1,36 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# CocoaPods / Carthage (om det blir aktuellt)
+Pods/
+Carthage/Build/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# OneDrive-konfliktkopior
+*-DESKTOP-*.swift
+*[Kk]onflikt*

@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+*.pbxproj -text merge=union
+*.xcworkspacedata -text
+*.png binary
+*.jpg binary
+*.usdz binary
+*.hdr binary
