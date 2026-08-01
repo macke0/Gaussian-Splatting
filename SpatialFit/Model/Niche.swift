@@ -49,8 +49,14 @@ struct Niche: Identifiable, Equatable, Sendable {
     /// Nischvolymens mittpunkt i scenens koordinatsystem, meter.
     /// (Prototypen antar att nischen är axelriktad – se Geometry.swift.)
     let center: SIMD3<Float>
+    /// Osäkerheten som den faktiska skanningen kom fram till, ± mm. Sätts av
+    /// `NicheMeasurer` och går före källans schablon: en yta belagd med tusen
+    /// punkter är mycket säkrare än RoomPlans nominella ±15 mm, och en yta som
+    /// knappt gick att belägga är mycket sämre.
+    var measuredToleranceMM: Double? = nil
 
-    var toleranceMM: Double { source.nominalToleranceMM }
+    /// Vad zonlogiken räknar med: uppmätt värde om det finns, annars schablon.
+    var toleranceMM: Double { measuredToleranceMM ?? source.nominalToleranceMM }
 
     /// Nischens volym som en låda, för renderingen.
     var box: BoxAABB {

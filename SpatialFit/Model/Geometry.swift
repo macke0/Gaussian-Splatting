@@ -47,6 +47,10 @@ struct BoxAABB: Equatable, Sendable {
 
     /// Storleken uttryckt i millimeter, för UI.
     var dimensions: Dimensions3D { Dimensions3D(metersSize: size) }
+
+    func contains(_ point: SIMD3<Float>) -> Bool {
+        all(point .>= minCorner) && all(point .<= maxCorner)
+    }
 }
 
 // MARK: - Hinder
