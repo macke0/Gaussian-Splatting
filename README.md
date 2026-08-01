@@ -10,16 +10,20 @@ demonstreras för en kedja utan att någon behöver skanna ett rum först.
 
 ## Kom igång
 
-1. Xcode → *File ▸ New ▸ Project ▸ iOS ▸ App*
-   - Product Name: `SpatialFit`
-   - Interface: **SwiftUI**, Language: **Swift**
-   - Testing System: **Swift Testing**
-2. Radera den genererade `ContentView.swift` och `SpatialFitApp.swift`.
-3. Dra in mapparna `SpatialFit/` och `SpatialFitTests/` i projektet
-   (*Create groups*, target `SpatialFit` respektive `SpatialFitTests`).
-4. Deployment target: **iOS 18.0** (`RealityView`, `MagnifyGesture`,
-   `@Observable`, `symbolEffect`).
-5. Kör på simulator eller enhet.
+`SpatialFit.xcodeproj` ligger i repot. Öppna det och kör på simulator eller
+enhet — deployment target är **iOS 18.0** (`RealityView`, `MagnifyGesture`,
+`@Observable`, `symbolEffect`).
+
+Båda targets använder Xcodes synkroniserade filgrupper: filer som läggs till i
+`SpatialFit/` respektive `SpatialFitTests/` på disk kommer automatiskt med i
+bygget. Ingen `pbxproj`-redigering behövs för nya källfiler.
+
+Från terminalen:
+
+```bash
+xcodebuild -scheme SpatialFit -destination 'platform=iOS Simulator,name=iPhone 17' build
+xcodebuild test -scheme SpatialFit -destination 'platform=iOS Simulator,name=iPhone 17'
+```
 
 Ingen kamerabehörighet behövs i steg 1. Först när `content.camera` sätts till
 `.worldTracking` krävs `NSCameraUsageDescription` i Info.plist.
@@ -144,4 +148,4 @@ väggnormalen mot z-fighting, och UV-repeat = väggmått / plattmått så att
 `SpatialFitTests/CollisionEngineTests.swift` täcker zongränserna,
 installationsmarginal, mätosäkerhet, krockgeometrin (2 träffar × 150 mm) och
 att tangerande ytor inte larmar. Testerna importerar varken RealityKit eller
-SwiftUI — kör på ⌘U utan simulatorstart.
+SwiftUI — hela affärsregeln går att verifiera utan scen. Kör på ⌘U.

@@ -40,11 +40,11 @@ hårdkodade tal i motorn eller vyerna. Kedjor kommer vilja ha olika marginaler.
 ## Bygga och testa (macOS)
 
 ```bash
-xcodebuild -scheme SpatialFit -destination 'platform=iOS Simulator,name=iPhone 16' build
+xcodebuild -scheme SpatialFit -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
 
 ```bash
-xcodebuild test -scheme SpatialFit -destination 'platform=iOS Simulator,name=iPhone 16'
+xcodebuild test -scheme SpatialFit -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 
 Testerna i `SpatialFitTests/` importerar varken RealityKit eller SwiftUI. När du

@@ -15,7 +15,8 @@ struct SpatialFitApp: App {
         PulseSystem.registerSystem()
     }
 
-    var body: some Scene {
+    // SwiftUI.Scene måste kvalificeras – RealityKit exporterar också en Scene.
+    var body: some SwiftUI.Scene {
         WindowGroup {
             FitDemoView()
         }
