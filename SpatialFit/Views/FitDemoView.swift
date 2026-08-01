@@ -2,12 +2,11 @@
 //  FitDemoView.swift
 //  SpatialFit
 //
-//  MVP-vyn: mockad nisch i RealityKit + zonlogik + krockmodal.
+//  Demovyn: nisch i RealityKit + zonlogik + krockmodal.
 //
-//  Scenen körs med VIRTUELL kamera så att demot fungerar i simulatorn och på
-//  enheter utan LiDAR. Bytet till AR är en rad – se `content.camera` nedan –
-//  plus att `model.apply(source:)` matas med RoomPlan-data i stället för
-//  MockKitchenNiche.
+//  Två lägen. Utan skanning körs scenen med VIRTUELL kamera, så att demot
+//  fungerar i simulatorn och på enheter utan LiDAR. Efter en RoomPlan-skanning
+//  byts den mot passthrough, och nischen ankras där väggen faktiskt står.
 //
 
 import SwiftUI
@@ -25,15 +24,20 @@ struct FitDemoView: View {
     @State private var dragStart: SIMD2<Float>?
     @State private var distanceStart: Float?
 
+    @State private var showsScanner = false
+
     var body: some View {
         ZStack {
             sceneView
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FitBadgeView(fit: model.fit)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                HStack(alignment: .top, spacing: 8) {
+                    FitBadgeView(fit: model.fit)
+                    scanButton
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
 
                 Spacer(minLength: 0)
 
@@ -56,13 +60,58 @@ struct FitDemoView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: model.showsCollisionAlert)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showsScanner) {
+            RoomScanView { scanned in
+                model.apply(source: scanned)
+            }
+        }
+    }
+
+    private var scanButton: some View {
+        Button {
+            showsScanner = true
+        } label: {
+            Image(systemName: "cube.transparent")
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .accessibilityLabel("Skanna rummet")
     }
 
     // MARK: - 3D
 
+    @ViewBuilder
     private var sceneView: some View {
+        if model.usesWorldTracking {
+            augmentedSceneView
+        } else {
+            virtualSceneView
+        }
+    }
+
+    /// Passthrough. Nischen hängs under ett världsankare med väggens vridning,
+    /// så att den skannade geometrin hamnar där den faktiskt står.
+    private var augmentedSceneView: some View {
         RealityView { content in
-            // Byt till `.worldTracking` för AR-passthrough i steg 2.
+            content.camera = .spatialTracking
+
+            controller.buildRoom(niche: model.niche, obstacles: model.obstacles)
+            controller.render(model.fit)
+
+            let anchor = AnchorEntity(.world(transform: model.worldFromNiche))
+            anchor.addChild(controller.root)
+            content.add(anchor)
+
+        } update: { _ in
+            controller.buildRoom(niche: model.niche, obstacles: model.obstacles)
+            controller.render(model.fit)
+        }
+    }
+
+    /// Virtuell kamera: fungerar i simulatorn och utan LiDAR.
+    private var virtualSceneView: some View {
+        RealityView { content in
             content.camera = .virtual
 
             controller.buildRoom(niche: model.niche, obstacles: model.obstacles)

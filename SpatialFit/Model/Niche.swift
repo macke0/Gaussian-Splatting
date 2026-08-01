@@ -77,6 +77,14 @@ struct Niche: Identifiable, Equatable, Sendable {
 protocol NicheSource {
     var niche: Niche { get }
     var obstacles: [Obstacle] { get }
+    /// Nischens lokala system → världen. Scenlagret hänger ankaret på den, så
+    /// att en snett skannad nisch hamnar rätt i passthrough-vyn.
+    var worldFromNiche: simd_float4x4 { get }
+}
+
+extension NicheSource {
+    /// Mock- och demodata ligger i scenens origo och behöver ingen vridning.
+    var worldFromNiche: simd_float4x4 { matrix_identity_float4x4 }
 }
 
 /// Mockad köksnisch: 600 mm fritt mellan två 600-underskåp med bänkskiva,

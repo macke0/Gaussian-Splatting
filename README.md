@@ -182,11 +182,11 @@ larma mot golvet den står på.
 
 ## Kända begränsningar i prototypen
 
-1. **Ingen skanning i appen ännu.** `NicheFinder` och `CapturedRoomReader` är
-   klara och testade, men inget UI startar en `RoomCaptureSession` — demot kör
-   fortfarande `MockKitchenNiche`. Inkopplingen är `model.apply(source:)`, som
-   redan finns. Den saknade biten är skanningsvyn, och den går inte att prova
-   på annat än en LiDAR-enhet.
+1. **Skanningsflödet är okört.** `NicheFinder` och `CapturedRoomReader` är
+   testade mot syntetisk data, och `RoomScanView` är skriven — men RoomPlan
+   kräver LiDAR, så ingen rad av själva skanningen har körts. Först på enhet
+   visar det sig om RoomPlans skåpsdimensioner räcker för millimetersnack,
+   eller om `Measurement/` måste ta över måtten (steg 3).
 2. **Ett vridet skåp blir sin omslutande låda.** Hinder projiceras ner på
    nischens bas, så ett skåp som står snett *mot sin egen vägg* blir någon
    millimeter för brett. Mot väggens bas är approximationen tät för allt som
@@ -210,10 +210,18 @@ mellan skåp som står an mot samma vägg och returnerar `Niche` + `[Obstacle]` 
 `worldFromNiche`. `source: .roomPlan` sätts, så mätosäkerheten följer med in i
 UI:t. **Ingen rad i `Engine/` ändrades** — hela poängen med `NicheSource`.
 
-Kvar av steg 2 är bara det enhetsberoende: en vy som kör `RoomCaptureSession`,
-`content.camera = .worldTracking`, `NSCameraUsageDescription` i Info.plist, och
-`controller.root` under en `AnchorEntity` med `worldFromNiche`. Inkopplingen mot
-modellen är `model.apply(source:)`, som redan finns.
+Skanningsflödet finns också: knappen uppe till höger öppnar `RoomScanView`,
+som kör RoomPlans egen `RoomCaptureView`, listar de nischer som hittades och
+låter användaren peka ut rätt. Vald nisch går in i `model.apply(source:)`, och
+scenen byter då till passthrough med nischen ankrad på `worldFromNiche`.
+
+Notera: på iOS heter kameraläget `.spatialTracking`, inte `.worldTracking` —
+det senare finns bara på visionOS. `NSCameraUsageDescription` sätts via
+`INFOPLIST_KEY_NSCameraUsageDescription` i projektinställningarna.
+
+**Det här går inte att prova i simulatorn.** `RoomCaptureSession.isSupported`
+är falskt där, och vyn visar då "Enheten saknar LiDAR" i stället för att
+krascha. Kör på en iPhone Pro eller iPad Pro för att verifiera flödet.
 
 **Steg 3 — Precision.** Mätkärnan finns (`Measurement/`, se ovan) och
 `DepthPointCloud` läser ut ARKits djupkarta. Det som återstår är limmet:

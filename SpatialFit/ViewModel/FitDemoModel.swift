@@ -8,6 +8,7 @@
 
 import Foundation
 import Observation
+import simd
 
 @Observable
 final class FitDemoModel {
@@ -15,6 +16,13 @@ final class FitDemoModel {
     private(set) var niche: Niche
     private(set) var obstacles: [Obstacle]
     private(set) var fit: FitResult
+    /// Var nischen sitter i världen. Identitet för demodata, väggens vridning
+    /// för en skannad nisch.
+    private(set) var worldFromNiche: simd_float4x4
+
+    /// Passthrough bara när nischen kommer ur en skanning – demodata har ingen
+    /// plats i rummet att ankras mot.
+    var usesWorldTracking: Bool { niche.source != .mock }
 
     let catalog: [Product]
     var policy: FitPolicy { didSet { recalculate() } }
@@ -32,6 +40,7 @@ final class FitDemoModel {
          policy: FitPolicy = .standard) {
         self.niche = source.niche
         self.obstacles = source.obstacles
+        self.worldFromNiche = source.worldFromNiche
         self.catalog = catalog
         self.policy = policy
         let first = catalog.first ?? ProductCatalog.productA
@@ -53,10 +62,11 @@ final class FitDemoModel {
         dismissedAlertForProductID = selectedProduct.id
     }
 
-    /// Byt datakälla i drift – här kopplas RoomPlan-resultatet in i steg 2.
+    /// Byt datakälla i drift. Hit kommer RoomPlan-resultatet.
     func apply(source: any NicheSource) {
         niche = source.niche
         obstacles = source.obstacles
+        worldFromNiche = source.worldFromNiche
         dismissedAlertForProductID = nil
         recalculate()
     }
