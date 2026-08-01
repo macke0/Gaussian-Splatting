@@ -51,18 +51,23 @@ SpatialFit/
 │   ├── Units.swift          mm ⇄ m på exakt ett ställe. Axis, Dimensions3D.
 │   ├── Geometry.swift       BoxAABB, Obstacle, Intersection. Ren simd.
 │   ├── Product.swift        PIM-bounding box + demokatalog.
+│   ├── RoomElement.swift    Skannat rum som orienterade lådor — utan RoomPlan.
 │   └── Niche.swift          Niche, MeasurementSource, NicheSource-protokollet,
 │                            MockKitchenNiche.
 ├── Engine/
 │   ├── FitResult.swift      FitPolicy, AxisClearance, FitZone, texterna.
 │   └── CollisionEngine.swift  evaluate() / placement() / intersections().
-├── Measurement/             Punktmoln → mått. Ren simd, testbar utan enhet.
+├── Measurement/             Rum och punktmoln → mått. Ren simd, testbar utan enhet.
 │   ├── DepthSample.swift    Djuppunkt i världskoordinater + confidence.
 │   ├── PlaneFit.swift       Robust planpassning med medelfel.
-│   └── NicheMeasurer.swift  Punktmoln + grovt utgångsläge → NicheMeasurement.
+│   ├── NicheMeasurer.swift  Punktmoln + grovt utgångsläge → NicheMeasurement.
+│   └── NicheFinder.swift    [RoomElement] → ScannedNiche i nischens egen bas.
 ├── ARKit/
 │   └── DepthPointCloud.swift  ARFrame → [DepthSample]. Enda stället som rör
 │                            ARKits djupkarta.
+├── RoomPlan/
+│   └── CapturedRoomReader.swift  CapturedRoom → [RoomElement] +
+│                            RoomPlanNicheSource. Enda stället som rör RoomPlan.
 ├── RealityKit/
 │   ├── PulseSystem.swift    ECS-system för pulserande varningsmaterial.
 │   ├── EntityFactory.swift  lådor, trådramar, måttetiketter.
@@ -138,6 +143,30 @@ Med `FitPolicy.addsScanTolerance` slår det direkt igenom i zonerna: en välmät
 nisch behåller sin gröna zon där RoomPlans nominella ±15 mm hade tvingat fram
 gult.
 
+### Vridna rum
+
+Riktiga kök står inte längs ARKits världsaxlar. Den uppenbara motåtgärden är
+att göra motorn tyngre — OBB och SAT i stället för AABB — men det behövs inte.
+Problemet är inte att lådorna är fel sort, det är att de uttrycks i fel
+koordinatsystem.
+
+`NicheFinder` bygger därför en ortonormal bas ur väggen (längs, upp, ut i
+rummet) och uttrycker nisch och hinder i den. Origo läggs i golvhöjd, mitt i
+nischens bredd och djup — exakt mockens konvention, så `CollisionEngine` och
+`FitSceneController` fungerar oförändrade. I nischens eget system står nischen
+rakt per definition, och AABB-matematiken är giltig igen.
+
+`ScannedNiche.worldFromNiche` bär vridningen tillbaka ut till scenen; den sätts
+på `AnchorEntity`-transformen när passthrough kopplas in.
+
+Testerna kör hela kedjan mot ett kök som står **31° snett och 2,5 m från
+origo**, och kräver millimeterfacit på alla tre axlar. Ett kök som råkar ligga
+längs X bevisar ingenting — det är precis det fall där även den gamla koden
+fungerade.
+
+OBB + SAT behövs först om nischens egna sidor inte är vinkelräta mot varandra
+(förekommer i äldre badrum).
+
 ### Krockvolymerna
 
 De röda pulserande lådorna är inte dekoration — de är den faktiska
@@ -153,32 +182,38 @@ larma mot golvet den står på.
 
 ## Kända begränsningar i prototypen
 
-1. **Axelriktad geometri i motorn.** `PlaneFitter` hittar redan vridna ytors
-   normaler korrekt (testat mot en 8°-vägg), men `NicheMeasurer` projicerar
-   ner resultatet på X/Y/Z och `CollisionEngine` räknar AABB. För ett vridet kök
-   blir måtten därför rätt medan krocklådorna hamnar snett. Fix: bygg ett
-   ortonormalt system ur de passade normalerna och transformera produkt och
-   hinder in i nischens lokala koordinater innan `intersection()` anropas — då
-   gäller AABB-matematiken igen. OBB + SAT behövs först om nischens egna
-   sidor inte är vinkelräta mot varandra (förekommer i äldre badrum).
-2. **Krockfärgen sitter på överlappslådan, inte på produktmeshen.** Att färga
+1. **Ingen skanning i appen ännu.** `NicheFinder` och `CapturedRoomReader` är
+   klara och testade, men inget UI startar en `RoomCaptureSession` — demot kör
+   fortfarande `MockKitchenNiche`. Inkopplingen är `model.apply(source:)`, som
+   redan finns. Den saknade biten är skanningsvyn, och den går inte att prova
+   på annat än en LiDAR-enhet.
+2. **Ett vridet skåp blir sin omslutande låda.** Hinder projiceras ner på
+   nischens bas, så ett skåp som står snett *mot sin egen vägg* blir någon
+   millimeter för brett. Mot väggens bas är approximationen tät för allt som
+   står längs väggen — och ett skåp som verkligen står snett mot väggen är i
+   praktiken felskannat, inte snett.
+3. **Krockfärgen sitter på överlappslådan, inte på produktmeshen.** Att färga
    just den del av meshen som skär in kräver en `CustomMaterial` med en Metal
    surface shader som klipper mot krockplanet. `PulseComponent`/`PulseSystem`
    kan behållas oförändrade — bara materialbytet i `PulseSystem.update` skrivs om.
-3. **Lådor i stället för USDZ.** Produktkroppen är en grå låda i PIM-boxens
+4. **Lådor i stället för USDZ.** Produktkroppen är en grå låda i PIM-boxens
    mått. Riktiga modeller hängs in via `Product.modelAssetName` — men måtten
    måste fortsätta komma från PIM, aldrig från `visualBounds` på USDZ:en.
-4. **Nischen ligger i scenens origo.** `Niche.center` finns redan; den fylls i
-   från ankaret när RoomPlan kopplas in.
+5. **Scenen ligger i origo.** `ScannedNiche.worldFromNiche` finns och är testad,
+   men scenlagret använder den inte förrän kameran byts till `.worldTracking`.
 
 ## Nästa steg
 
-**Steg 2 — RoomPlan.** Lägg till en `RoomPlanNicheSource: NicheSource` som tar
-en `CapturedRoom`, plockar `.wall`-ytor och `.storage`-objekt, mäter gapen och
-returnerar `Niche` + `[Obstacle]`. Sätt `source: .roomPlan` så följer
-mätosäkerheten med in i UI:t. Byt `content.camera` till `.worldTracking` och
-hängn `controller.root` under en `AnchorEntity`. Ingen rad i `Engine/` behöver
-ändras — det är hela poängen med `NicheSource`-protokollet.
+**Steg 2 — RoomPlan.** Tolkningen är klar: `RoomPlanNicheSource.niches(in:)` tar
+en `CapturedRoom`, plockar väggar, golv, öppningar och objekt, hittar gapen
+mellan skåp som står an mot samma vägg och returnerar `Niche` + `[Obstacle]` +
+`worldFromNiche`. `source: .roomPlan` sätts, så mätosäkerheten följer med in i
+UI:t. **Ingen rad i `Engine/` ändrades** — hela poängen med `NicheSource`.
+
+Kvar av steg 2 är bara det enhetsberoende: en vy som kör `RoomCaptureSession`,
+`content.camera = .worldTracking`, `NSCameraUsageDescription` i Info.plist, och
+`controller.root` under en `AnchorEntity` med `worldFromNiche`. Inkopplingen mot
+modellen är `model.apply(source:)`, som redan finns.
 
 **Steg 3 — Precision.** Mätkärnan finns (`Measurement/`, se ovan) och
 `DepthPointCloud` läser ut ARKits djupkarta. Det som återstår är limmet:
@@ -207,5 +242,13 @@ punkt (i värsta laget för iPhone-LiDAR på en meters håll) och ett utgångsl�
 brusutfall så att det inte är turen som testas. Där ligger också testet för att
 en 8°-vriden vägg får rätt normal, och för att en yta som saknas i molnet ger
 `nil` i stället för ett påhittat mått.
+
+`SpatialFitTests/NicheFinderTests.swift` bygger ett **syntetiskt kök som står
+snett**: 31° vridet, 2,5 m från origo, med skåp och ytor uttryckta som RoomPlan
+uttrycker dem. Nischen ska mätas till 600 × 900 × 650 mm på under en millimeter
+oavsett vridning, transformen ska vara ortonormal och högerorienterad, och
+Range Cookern ska ge exakt två krockar på 150 mm var. Där ligger också de fall
+där svaret ska vara *ingen nisch*: ett dörrhål mellan skåpen, en köksö som står
+ute i rummet, en 120 mm-springa, ett tomt rum.
 
 Kör på ⌘U.
