@@ -267,6 +267,68 @@ struct TexturingTests {
                                    depth: Self.noDepth) == nil)
     }
 
+    // MARK: - Uppdelning
+
+    static func area(of triangle: ViewSelection.Triangle) -> Float {
+        simd_length(simd_cross(triangle.b - triangle.a, triangle.c - triangle.a)) / 2
+    }
+
+    @Test("En stor triangel delas tills bitarna ryms i en bild")
+    func largeTrianglesAreSplit() {
+        let wall = ViewSelection.Triangle(SIMD3(0, 0, -2),
+                                          SIMD3(2.4, 0, -2),
+                                          SIMD3(0, 2.4, -2))
+        let pieces = ViewSelection.subdivided([wall], maximumEdge: 0.3)
+
+        #expect(pieces.count > 1)
+        for piece in pieces {
+            let longest = max(simd_distance(piece.a, piece.b),
+                              simd_distance(piece.b, piece.c),
+                              simd_distance(piece.c, piece.a))
+            #expect(longest <= 0.3)
+        }
+    }
+
+    @Test("Små trianglar lämnas i fred")
+    func smallTrianglesAreLeftAlone() {
+        // Längsta kanten är 0,1 m — redan under gränsen.
+        let small = ViewSelection.Triangle(SIMD3(0, 0, -2),
+                                           SIMD3(0.1, 0, -2),
+                                           SIMD3(0, 0.1, -2))
+        #expect(ViewSelection.subdivided([small], maximumEdge: 0.3) == [small])
+    }
+
+    @Test("Uppdelningen bevarar ytan, inte bara hörnen")
+    func subdivisionKeepsTheArea() {
+        let wall = ViewSelection.Triangle(SIMD3(0, 0, -2),
+                                          SIMD3(1.2, 0, -2),
+                                          SIMD3(0, 1.2, -2))
+        let pieces = ViewSelection.subdivided([wall], maximumEdge: 0.3)
+
+        #expect(abs(pieces.reduce(0) { $0 + Self.area(of: $1) } - Self.area(of: wall)) < 0.001)
+    }
+
+    /// Djupet begränsar hur långt uppdelningen får gå — en enda triangel får
+    /// inte kunna spränga minnet.
+    @Test("Uppdelningen bottnar i stället för att växa fritt")
+    func subdivisionRespectsItsDepthLimit() {
+        let huge = ViewSelection.Triangle(SIMD3(0, 0, -2),
+                                          SIMD3(40, 0, -2),
+                                          SIMD3(0, 40, -2))
+        #expect(ViewSelection.subdivided([huge], maximumEdge: 0.3, maximumDepth: 2).count == 16)
+    }
+
+    @Test("Budgeten hindrar en vägg från att bli hundratusen bitar")
+    func subdivisionStopsAtItsBudget() {
+        let wall = ViewSelection.Triangle(SIMD3(0, 0, -2),
+                                          SIMD3(4, 0, -2),
+                                          SIMD3(0, 4, -2))
+        let pieces = ViewSelection.subdivided([wall, wall, wall],
+                                              maximumEdge: 0.05,
+                                              budget: 100)
+        #expect(pieces.count < 300)
+    }
+
     // MARK: - Djupuppslag
 
     @Test("Bildens hörn slår upp djupkartans hörn")

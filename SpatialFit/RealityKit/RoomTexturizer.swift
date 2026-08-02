@@ -33,6 +33,10 @@ enum RoomTexturizer {
         }
     }
 
+    /// Längsta triangelkant innan geometrin delas upp. En bit på tre decimeter
+    /// ryms i ett foto taget på normalt skanningsavstånd.
+    static let maximumEdgeM: Float = 0.3
+
     /// Bygger en fotograferad kopia av `source`.
     ///
     /// - Parameter directory: mappen där keyframe-bilderna ligger.
@@ -42,28 +46,34 @@ enum RoomTexturizer {
                           directory: URL) async throws -> Entity {
         guard !keyframes.isEmpty else { throw Failure.noKeyframes }
 
-        let triangles = worldTriangles(of: source)
-        guard !triangles.isEmpty else { throw Failure.noGeometry }
+        let coarse = worldTriangles(of: source)
+        guard !coarse.isEmpty else { throw Failure.noGeometry }
 
         // Miljontals projektioner. Ren simd-räkning, så den flyttas av huvudtråden.
-        let groups = await Task.detached(priority: .userInitiated) {
+        let painting = await Task.detached(priority: .userInitiated) {
+            let triangles = ViewSelection.subdivided(coarse, maximumEdge: maximumEdgeM)
             let depth = DepthMaps(keyframes: keyframes, directory: directory)
             return assign(triangles: triangles, to: keyframes, depth: depth.lookup)
         }.value
-        guard !groups.isEmpty else { throw Failure.nothingVisible }
+        guard !painting.groups.isEmpty else { throw Failure.nothingVisible }
 
         let root = Entity()
         root.name = "TexturedRoom"
 
-        for (keyframeID, group) in groups.sorted(by: { $0.key < $1.key }) {
+        for (keyframeID, group) in painting.groups.sorted(by: { $0.key < $1.key }) {
             guard let keyframe = keyframes.first(where: { $0.id == keyframeID }),
                   let part = try? await texturedPart(group: group,
                                                      keyframe: keyframe,
                                                      directory: directory) else { continue }
             root.addChild(part)
         }
-
         guard !root.children.isEmpty else { throw Failure.nothingVisible }
+
+        // Ytor som ingen bild såg får inte bara försvinna. Utan dem är rummet
+        // inte längre ett rum utan lösryckta fotolappar i luften.
+        if let bare = try? barePart(group: painting.unpainted) {
+            root.addChild(bare)
+        }
         return root
     }
 
@@ -129,20 +139,62 @@ enum RoomTexturizer {
 
     // MARK: - Fördelning på bilder
 
+    private struct Painting: Sendable {
+        var groups: [Int: [ViewSelection.Triangle]] = [:]
+        var unpainted: [ViewSelection.Triangle] = []
+    }
+
     private static func assign(triangles: [ViewSelection.Triangle],
                                to keyframes: [Keyframe],
-                               depth: ViewSelection.DepthLookup) -> [Int: [ViewSelection.Triangle]] {
+                               depth: ViewSelection.DepthLookup) -> Painting {
         let labels = ViewSelection.assign(triangles: triangles, keyframes: keyframes, depth: depth)
 
-        var groups: [Int: [ViewSelection.Triangle]] = [:]
+        var painting = Painting()
         for (triangle, label) in zip(triangles, labels) {
-            guard let label else { continue }
-            groups[label, default: []].append(triangle)
+            if let label {
+                painting.groups[label, default: []].append(triangle)
+            } else {
+                painting.unpainted.append(triangle)
+            }
         }
-        return groups
+        return painting
     }
 
     // MARK: - Bygga en texturerad del
+
+    /// Trianglar som ingen bild kunde måla, i grått. Materialet är
+    /// `PhysicallyBasedMaterial` för att scenens ljus ska ge ytan form — till
+    /// skillnad från fotona, som har ljuset inbakat.
+    @MainActor
+    private static func barePart(group: [ViewSelection.Triangle]) throws -> Entity {
+        var positions: [SIMD3<Float>] = []
+        var normals: [SIMD3<Float>] = []
+        var indices: [UInt32] = []
+
+        for triangle in group {
+            guard let normal = triangle.normal else { continue }
+            for corner in [triangle.a, triangle.b, triangle.c] {
+                indices.append(UInt32(positions.count))
+                positions.append(corner)
+                normals.append(normal)
+            }
+        }
+        guard !indices.isEmpty else { throw Failure.nothingVisible }
+
+        var descriptor = MeshDescriptor(name: "omålat")
+        descriptor.positions = MeshBuffers.Positions(positions)
+        descriptor.normals = MeshBuffers.Normals(normals)
+        descriptor.primitives = .triangles(indices)
+
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: .init(white: 0.72, alpha: 1))
+        material.roughness = 0.9
+        material.metallic = 0.0
+        material.faceCulling = .none
+
+        return ModelEntity(mesh: try MeshResource.generate(from: [descriptor]),
+                           materials: [material])
+    }
 
     /// `MeshResource` och `ModelEntity` hör hemma på huvudtråden — RealityKit
     /// isolerar dem dit i Swift 6.

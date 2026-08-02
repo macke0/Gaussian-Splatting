@@ -106,6 +106,58 @@ enum ViewSelection {
         return facing / distance
     }
 
+    // MARK: - Uppdelning
+
+    /// Delar trianglar tills ingen kant är längre än `maximumEdge`.
+    ///
+    /// Kravet på att alla tre hörnen ska synas i samma bild är hårt mot stora
+    /// trianglar: en vägg som RoomPlan lämnat som två trianglar ryms inte i ett
+    /// foto taget en och en halv meter bort, och blir därför aldrig målad.
+    /// Mindre bitar får plats — och kan dessutom följa rummet närmare.
+    /// - Parameter budget: tak för antalet bitar. Nås det får resten av
+    ///   trianglarna vara som de är — hellre grovt målade än slut på minne.
+    static func subdivided(_ triangles: [Triangle],
+                           maximumEdge: Float,
+                           maximumDepth: Int = 4,
+                           budget: Int = 400_000) -> [Triangle] {
+        var result: [Triangle] = []
+        result.reserveCapacity(triangles.count)
+        for (index, triangle) in triangles.enumerated() {
+            guard result.count + (triangles.count - index) < budget else {
+                result.append(contentsOf: triangles[index...])
+                break
+            }
+            split(triangle, maximumEdge: maximumEdge, depth: maximumDepth, into: &result)
+        }
+        return result
+    }
+
+    /// Delar på kantmitterna. Två trianglar som delar en kant delar den på
+    /// samma punkt, så ytan förblir tät.
+    private static func split(_ triangle: Triangle,
+                              maximumEdge: Float,
+                              depth: Int,
+                              into result: inout [Triangle]) {
+        let longest = max(simd_distance(triangle.a, triangle.b),
+                          simd_distance(triangle.b, triangle.c),
+                          simd_distance(triangle.c, triangle.a))
+        guard depth > 0, longest > maximumEdge else {
+            result.append(triangle)
+            return
+        }
+
+        let ab = (triangle.a + triangle.b) / 2
+        let bc = (triangle.b + triangle.c) / 2
+        let ca = (triangle.c + triangle.a) / 2
+
+        for piece in [Triangle(triangle.a, ab, ca),
+                      Triangle(ab, triangle.b, bc),
+                      Triangle(ca, bc, triangle.c),
+                      Triangle(ab, bc, ca)] {
+            split(piece, maximumEdge: maximumEdge, depth: depth - 1, into: &result)
+        }
+    }
+
     // MARK: - Sammanhängande val
 
     /// Hur mycket sämre en grannes bild får vara innan sammanhanget väger

@@ -75,6 +75,12 @@ grupperas trianglarna efter vilken bild som såg dem bäst, och varje grupp blir
 en egen del med den bilden som textur. Det ger full fotoupplösning utan att
 packa om pixlar, och kostar en ritning per keyframe.
 
+Först delas geometrin upp så att ingen triangelkant är längre än 30 cm. En vägg
+som RoomPlan lämnat som ett par stora trianglar ryms inte i ett foto taget en
+och en halv meter bort, och skulle med krav 1 nedan aldrig bli målad alls.
+Uppdelningen sker på kantmitterna, så ytan förblir tät, och har en budget —
+en enda vägg får inte kunna bli hundratusen bitar.
+
 `ViewSelection` avgör vilken bild som vinner. Tre krav, alla nödvändiga:
 
 1. **Alla tre hörnen syns i bilden.** Räcker bilden inte till hela triangeln
@@ -97,6 +103,9 @@ bilden inte är påtagligt sämre. Grannskapet byggs ur hörnens läge avrundat 
 millimeter, eftersom trianglarna kommer utan delade index. Uppdateringen sker på
 plats — räknade man fram alla nya val ur de gamla skulle två grannar kunna byta
 med varandra i all evighet utan att någonsin mötas.
+
+Ytor som ingen bild dög till målas inte — men de renderas ändå, i grått. Utan
+dem är resultatet inte ett rum med hål i, utan lösryckta fotolappar i luften.
 
 Materialet är `UnlitMaterial` med flit: ljuset ligger redan i fotot. Med PBR och
 scenens lampor blir rummet dubbelbelyst. Den grå mesh:en finns kvar som
