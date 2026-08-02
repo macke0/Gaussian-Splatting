@@ -30,6 +30,7 @@ struct RoomViewerView: View {
     @State private var showsPhotos = true
     @State private var status: Status = .loading
     @State private var showsProducts = false
+    @State private var showsBaking = false
 
     private enum Status: Equatable {
         case loading
@@ -74,6 +75,12 @@ struct RoomViewerView: View {
                     }
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Baka rummet", systemImage: "paintbrush") {
+                    showsBaking = true
+                }
+                .disabled(!room.hasPhotos)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Lägg till produkt", systemImage: "shippingbox") {
                     showsProducts = true
@@ -83,6 +90,15 @@ struct RoomViewerView: View {
         }
         .fullScreenCover(isPresented: $showsProducts) {
             ProductPlacementView(room: room, store: store)
+        }
+        .sheet(isPresented: $showsBaking) {
+            BakeRoomView(room: room, store: store) {
+                // Det bakade rummet slår ut det som redan visas.
+                textured = try? TexturedMeshEntity.make(in: store.directory(for: room))
+                showsPhotos = true
+                showVariant()
+                status = .ready
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -154,6 +170,15 @@ struct RoomViewerView: View {
         distance = controller.defaultDistance
         applyCamera()
         status = .ready
+
+        // Serverns bakning är gjord med alla foton och blandar dem per texel.
+        // Finns den behöver telefonen inte måla om rummet sämre.
+        if store.hasBakedRoom(for: room),
+           let baked = try? TexturedMeshEntity.make(in: store.directory(for: room)) {
+            textured = baked
+            showVariant()
+            return
+        }
 
         let keyframes = store.keyframes(for: room)
         guard !keyframes.isEmpty else {

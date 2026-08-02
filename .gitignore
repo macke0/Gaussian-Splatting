@@ -21,6 +21,12 @@ Package.resolved
 Pods/
 Carthage/Build/
 
+# Python (bakningsservern)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # macOS
 .DS_Store
 .AppleDouble

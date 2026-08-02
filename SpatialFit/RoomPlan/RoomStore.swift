@@ -66,6 +66,25 @@ final class RoomStore {
         return mesh
     }
 
+    /// Om det bakade rummet från servern hämtats hem.
+    func hasBakedRoom(for room: SavedRoom) -> Bool {
+        fileManager.fileExists(atPath: directory(for: room)
+            .appending(path: TexturedMesh.meshFilename).path)
+    }
+
+    /// Filerna bakningsservern behöver. USDZ:n och `CapturedRoom` stannar på
+    /// telefonen — servern målar ytan, den tolkar inte rummet.
+    func scanFiles(for room: SavedRoom) -> [URL] {
+        let folder = directory(for: room)
+        var files = [folder.appending(path: SavedRoom.sceneMeshFilename),
+                     folder.appending(path: SavedRoom.keyframeFilename)]
+        for keyframe in keyframes(for: room) {
+            files.append(folder.appending(path: keyframe.imageFilename))
+            files.append(folder.appending(path: keyframe.depthFilename))
+        }
+        return files
+    }
+
     func keyframes(for room: SavedRoom) -> [Keyframe] {
         let url = directory(for: room).appending(path: SavedRoom.keyframeFilename)
         guard let data = try? Data(contentsOf: url),

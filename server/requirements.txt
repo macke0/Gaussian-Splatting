@@ -1,0 +1,14 @@
+numpy>=1.26
+pillow>=10.0
+scipy>=1.11
+trimesh>=4.0
+xatlas>=0.0.9
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+
+# Utglesningen. Kräver Python 3.10 — utan den bakas ytan otäljd, vilket tar
+# längre tid och ger en större fil, men samma bild.
+fast-simplification>=0.1.7; python_version >= "3.10"
+
+pytest>=8.0

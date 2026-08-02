@@ -59,7 +59,8 @@ Ett sparat rum ligger i en egen mapp under `Application Support/Rooms/<id>/`:
 `room.mesh` med den täta LiDAR-ytan, `room.usdz` med RoomPlans export,
 `room.json` med `CapturedRoom` så att nischerna kan räknas om när mätlogiken
 förbättras — utan att kunden skannar om — samt `keyframes.json` och fotona som
-målar rummet. Nischerna räknas därför om vid visning i stället för att cachas.
+målar rummet. Har rummet bakats på servern ligger `baked.mesh` och `baked.png`
+där också. Nischerna räknas därför om vid visning i stället för att cachas.
 
 ### Geometrin kommer från ARKit, inte från RoomPlan
 
@@ -136,6 +137,35 @@ scenens lampor blir rummet dubbelbelyst. Den grå mesh:en finns kvar som
 växelläge i verktygsfältet, eftersom den visar var geometrin har hål — det
 döljer fotona.
 
+### Den riktiga texturen bakas på en server
+
+Telefonens lapptäcke duger för att se rummet direkt efter skanningen, men det är
+ett lapptäcke. Varje triangel bär ett helt foto, exponeringen hoppar i varje söm
+och bara 40 keyframes är med.
+
+`server/` gör det ordentligt: ytan städas och glesas, veckas ut till en
+UV-atlas med xatlas, och varje texel projiceras in i *varje* foto som ser den.
+Bidragen viktas med `facing² / avstånd` och blandas — två lika bra vinklar möts i
+mitten i stället för att den ena vinner. Djupkartan används som skymningstest, så
+väggen bakom en spis inte målas ut över spisen. Texlar som inget foto såg blir
+grå och fylls ut från sina grannar.
+
+Resultatet är `baked.mesh` (`SFTEX001`: position, normal, UV per hörn) och
+`baked.png`. `TexturedMeshEntity` läser dem, och `RoomViewerView` föredrar dem
+framför att måla om rummet lokalt. `BakeService` sköter rundturen: hårdlänkar de
+filer servern behöver till en egen mapp, zippar med `NSFileCoordinator`
+`.forUploading`, laddar upp, frågar efter jobbets tillstånd och hämtar hem de två
+filerna var för sig — iOS kan packa ihop en mapp utan beroenden, men inte packa
+upp en.
+
+**Måtten går aldrig via servern.** Utjämningen och utglesningen rör bara den yta
+rummet visas med; nischerna räknas ur `CapturedRoom` och `Measurement/` på
+telefonen, på oförändrad data.
+
+Gaussian splatting kopplas in som färgkälla i `bake.py` när det blir aktuellt —
+utveckling, texel→värld, skymningstest och atlasskrivning är desamma oavsett var
+färgen kommer ifrån. Se `server/README.md`.
+
 ## Arkitektur
 
 ```
@@ -147,6 +177,7 @@ SpatialFit/
 │   ├── RoomElement.swift    Skannat rum som orienterade lådor — utan RoomPlan.
 │   ├── SavedRoom.swift      Metadata om ett sparat rum. Bara Foundation.
 │   ├── SceneMesh.swift      Den täta LiDAR-ytan + dess binärformat på disk.
+│   ├── TexturedMesh.swift   Det bakade rummet: position, normal, UV per hörn.
 │   ├── Keyframe.swift       Foto med känd pose. Projektion + djupuppslag.
 │   └── Niche.swift          Niche, MeasurementSource, NicheSource-protokollet,
 │                            MockKitchenNiche.
@@ -173,15 +204,27 @@ SpatialFit/
 │   ├── PulseSystem.swift    ECS-system för pulserande varningsmaterial.
 │   ├── EntityFactory.swift  lådor, trådramar, måttetiketter.
 │   ├── SceneMeshEntity.swift  SceneMesh → ritbar entitet, normaler och allt.
+│   ├── TexturedMeshEntity.swift  Det bakade rummet + dess atlas → entitet.
 │   ├── RoomSceneController.swift  Orbitrigg för att gå runt i ett skannat rum.
 │   ├── RoomTexturizer.swift  Mesh + keyframes → fotograferat rum.
 │   └── FitSceneController.swift  FitResult → entiteter. Enda filen som känner
 │                            till både affärslogik och RealityKit.
-├── ViewModel/FitDemoModel.swift
+├── Networking/BakeService.swift  Skanningen upp, det målade rummet ner.
+├── ViewModel/               FitDemoModel, RoomBakeModel.
 ├── Views/                   RoomLibraryView, RoomScanView, RoomViewerView,
-│                            ProductPlacementView, FitDemoView, FitBadgeView,
-│                            CollisionAlertView, ProductPickerBar.
+│                            BakeRoomView, ProductPlacementView, FitDemoView,
+│                            FitBadgeView, CollisionAlertView, ProductPickerBar.
 └── App/SpatialFitApp.swift
+
+server/                      Bakningen. Python, ingen Swift. Se server/README.md.
+├── spatialfit_server/
+│   ├── mesh.py              SFMESH01 och SFTEX001 — speglar Swift-formaten.
+│   ├── bundle.py            Rummets mapp → mesh + keyframes med pose och djup.
+│   ├── atlas.py             xatlas-utveckling + rasterisering till texel→värld.
+│   ├── bake.py              Texel × foto → färg. Viktad blandning, skymningstest.
+│   ├── pipeline.py          Städning, utjämning, utglesning, hela vägen.
+│   └── service.py           FastAPI: POST /bake, GET status, mesh, texture.
+└── tests/
 ```
 
 Beroendeflödet går **bara nedåt**: `Model` känner inte till `Engine`, `Engine`
