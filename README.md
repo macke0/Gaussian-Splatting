@@ -56,10 +56,33 @@ Dra för att rotera, nyp för att zooma.
    mot den. Det är här kollisionsmotorn från steg 1 kopplas in.
 
 Ett sparat rum ligger i en egen mapp under `Application Support/Rooms/<id>/`:
-`room.usdz` med mesh:en, `room.json` med `CapturedRoom` så att nischerna kan
-räknas om när mätlogiken förbättras — utan att kunden skannar om — samt
-`keyframes.json` och fotona som målar rummet. Nischerna räknas därför om vid
-visning i stället för att cachas.
+`room.mesh` med den täta LiDAR-ytan, `room.usdz` med RoomPlans export,
+`room.json` med `CapturedRoom` så att nischerna kan räknas om när mätlogiken
+förbättras — utan att kunden skannar om — samt `keyframes.json` och fotona som
+målar rummet. Nischerna räknas därför om vid visning i stället för att cachas.
+
+### Geometrin kommer från ARKit, inte från RoomPlan
+
+RoomPlan är en *tolkning*: väggar som plan, möbler som orienterade lådor med en
+kategori. Det är exakt rätt underlag för att mäta en nisch, men en diskbänk är
+inte en låda. Exporteras rummet med `USDExportOptions.mesh` är det fortfarande
+lådor — och projicerar man foton på lådor smetas bilderna ut, eftersom ytan de
+målas på inte är den yta de fotograferade.
+
+Den täta ytan finns redan. RoomPlan bygger sin tolkning ovanpå ARKits
+scenrekonstruktion, och ARKit lägger den som `ARMeshAnchor` i sessionen.
+`SceneMeshRecorder` läser dem när skanningen avslutas — anchors slås ihop
+löpande, så en enda avläsning på slutet ger hela rummet. Den måste ske innan
+sessionen stoppas; efteråt är de borta.
+
+`SceneMesh` är formatet på disk och håller sig till lagerregeln: bara Foundation
+och simd. Det är avsiktligt rått binärt — ett par hundra tusen hörn som JSON blir
+tiotals megabyte text. Hörnen skrivs packade till 12 byte, inte de 16 en
+`SIMD3<Float>` upptar i minnet. Vid inläsning avvisas filen om ett index pekar
+utanför hörnlistan: RealityKit kraschar på det i stället för att kasta.
+
+Rum skannade innan ytan började sparas — och enheter utan scenrekonstruktion —
+faller tillbaka på USDZ-exporten.
 
 ### Rummet målas med dina egna foton
 
@@ -75,11 +98,12 @@ grupperas trianglarna efter vilken bild som såg dem bäst, och varje grupp blir
 en egen del med den bilden som textur. Det ger full fotoupplösning utan att
 packa om pixlar, och kostar en ritning per keyframe.
 
-Först delas geometrin upp så att ingen triangelkant är längre än 30 cm. En vägg
-som RoomPlan lämnat som ett par stora trianglar ryms inte i ett foto taget en
-och en halv meter bort, och skulle med krav 1 nedan aldrig bli målad alls.
-Uppdelningen sker på kantmitterna, så ytan förblir tät, och har en budget —
-en enda vägg får inte kunna bli hundratusen bitar.
+Först delas geometrin upp så att ingen triangelkant är längre än 30 cm.
+LiDAR-ytan är redan finmaskig, men faller rummet tillbaka på USDZ-exporten är en
+vägg ett par stora trianglar som inte ryms i ett foto taget en och en halv meter
+bort — den skulle med krav 1 nedan aldrig bli målad alls. Uppdelningen sker på
+kantmitterna, så ytan förblir tät, och har en budget — en enda vägg får inte
+kunna bli hundratusen bitar.
 
 `ViewSelection` avgör vilken bild som vinner. Tre krav, alla nödvändiga:
 
@@ -122,6 +146,7 @@ SpatialFit/
 │   ├── Product.swift        PIM-bounding box + demokatalog.
 │   ├── RoomElement.swift    Skannat rum som orienterade lådor — utan RoomPlan.
 │   ├── SavedRoom.swift      Metadata om ett sparat rum. Bara Foundation.
+│   ├── SceneMesh.swift      Den täta LiDAR-ytan + dess binärformat på disk.
 │   ├── Keyframe.swift       Foto med känd pose. Projektion + djupuppslag.
 │   └── Niche.swift          Niche, MeasurementSource, NicheSource-protokollet,
 │                            MockKitchenNiche.
@@ -135,6 +160,7 @@ SpatialFit/
 │   └── NicheFinder.swift    [RoomElement] → ScannedNiche i nischens egen bas.
 ├── ARKit/
 │   ├── DepthPointCloud.swift  ARFrame → [DepthSample].
+│   ├── SceneMeshRecorder.swift  ARMeshAnchor → SceneMesh i världskoordinater.
 │   └── KeyframeRecorder.swift  Foto + pose + djup, sparat under skanningen.
 ├── Texturing/
 │   └── ViewSelection.swift  Vilken bild målar vilken triangel. Ren simd.
@@ -142,10 +168,11 @@ SpatialFit/
 │   ├── CapturedRoomReader.swift  CapturedRoom → [RoomElement] +
 │   │                        RoomPlanNicheSource.
 │   ├── RoomScanModel.swift  Skanningens tillstånd + RoomCaptureViewDelegate.
-│   └── RoomStore.swift      Sparade rum på disk: USDZ-mesh + CapturedRoom.
+│   └── RoomStore.swift      Sparade rum på disk: LiDAR-yta, USDZ, CapturedRoom.
 ├── RealityKit/
 │   ├── PulseSystem.swift    ECS-system för pulserande varningsmaterial.
 │   ├── EntityFactory.swift  lådor, trådramar, måttetiketter.
+│   ├── SceneMeshEntity.swift  SceneMesh → ritbar entitet, normaler och allt.
 │   ├── RoomSceneController.swift  Orbitrigg för att gå runt i ett skannat rum.
 │   ├── RoomTexturizer.swift  Mesh + keyframes → fotograferat rum.
 │   └── FitSceneController.swift  FitResult → entiteter. Enda filen som känner
@@ -265,7 +292,10 @@ larma mot golvet den står på.
    exponering — ingen färgutjämning görs mellan bilderna. Nästa steg vore att
    baka en texturatlas där varje texel blandar flera vyer, i stället för att
    varje triangel väljer en enda. Ytor som ingen bild såg tillräckligt bra
-   lämnas omålade och blir hål.
+   lämnas omålade och blir grå.
+   LiDAR-ytan är dessutom brusig och har hål där LiDAR:n inte nådde — den är
+   rätt form, inte en slät form. Att jämna ut och täppa till den (Poisson eller
+   liknande) är ett eget steg.
 2. **Nischprecisionen är oprövad på riktigt.** `NicheFinder` och
    `CapturedRoomReader` är testade mot syntetisk data. Först mot en tumstock
    visar det sig om RoomPlans skåpsdimensioner räcker för millimetersnack,

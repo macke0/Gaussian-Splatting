@@ -42,6 +42,9 @@ struct SavedRoom: Identifiable, Codable, Sendable, Hashable {
     static let modelFilename = "room.usdz"
     static let captureFilename = "room.json"
     static let keyframeFilename = "keyframes.json"
+    /// ARKits rekonstruerade yta. Finns inte för rum skannade innan den
+    /// började sparas, och inte på enheter utan scenrekonstruktion.
+    static let sceneMeshFilename = "room.mesh"
 
     var scannedAtDescription: String {
         scannedAt.formatted(date: .abbreviated, time: .shortened)

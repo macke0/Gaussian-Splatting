@@ -39,6 +39,10 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
 
     var keyframes: [Keyframe] { recorder.keyframes }
 
+    /// Den täta ytan ARKit rekonstruerade. Fylls när skanningen avslutas —
+    /// dessförinnan växer den fortfarande.
+    private(set) var sceneMesh = SceneMesh()
+
     override init() {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "scan-\(UUID().uuidString)")
@@ -76,6 +80,8 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         guard case .scanning = phase, let captureView else { return }
         phase = .processing
         recorder.stop()
+        // Måste läsas innan sessionen stoppas — sedan är anchors borta.
+        sceneMesh = SceneMeshRecorder.snapshot(of: captureView.captureSession.arSession)
         captureView.captureSession.stop()
     }
 

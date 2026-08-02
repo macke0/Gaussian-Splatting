@@ -57,6 +57,15 @@ final class RoomStore {
         directory(for: room).appending(path: SavedRoom.modelFilename)
     }
 
+    /// Den täta LiDAR-ytan, om skanningen fick tag i den. `nil` betyder att
+    /// bara RoomPlans tolkning finns att visa.
+    func sceneMesh(for room: SavedRoom) -> SceneMesh? {
+        let url = directory(for: room).appending(path: SavedRoom.sceneMeshFilename)
+        guard let data = try? Data(contentsOf: url), let mesh = SceneMesh(data: data),
+              !mesh.isEmpty else { return nil }
+        return mesh
+    }
+
     func keyframes(for room: SavedRoom) -> [Keyframe] {
         let url = directory(for: room).appending(path: SavedRoom.keyframeFilename)
         guard let data = try? Data(contentsOf: url),
@@ -86,7 +95,8 @@ final class RoomStore {
     func save(_ captured: CapturedRoom,
               name: String,
               keyframes: [Keyframe] = [],
-              photoDirectory: URL? = nil) throws -> SavedRoom {
+              photoDirectory: URL? = nil,
+              sceneMesh: SceneMesh = SceneMesh()) throws -> SavedRoom {
         let niches = NicheFinder.niches(in: CapturedRoomReader.elements(from: captured))
         let room = SavedRoom(name: name,
                              nicheCount: niches.count,
@@ -99,6 +109,11 @@ final class RoomStore {
                                 exportOptions: .mesh)
             try JSONEncoder().encode(captured)
                 .write(to: folder.appending(path: SavedRoom.captureFilename))
+
+            if !sceneMesh.isEmpty {
+                try sceneMesh.encoded()
+                    .write(to: folder.appending(path: SavedRoom.sceneMeshFilename))
+            }
 
             if !keyframes.isEmpty, let photoDirectory {
                 try movePhotos(keyframes, from: photoDirectory, to: folder)

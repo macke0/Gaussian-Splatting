@@ -145,7 +145,7 @@ struct RoomViewerView: View {
     private func load() async {
         guard plain == nil else { return }
 
-        guard let loaded = try? await Entity(contentsOf: store.modelURL(for: room)) else {
+        guard let loaded = await geometry() else {
             status = .failed
             return
         }
@@ -172,6 +172,16 @@ struct RoomViewerView: View {
         } catch {
             status = .plainOnly(error.localizedDescription)
         }
+    }
+
+    /// Den täta LiDAR-ytan först: den har möblernas verkliga former. RoomPlans
+    /// export är lådor och plan, och används bara när skanningen är gjord innan
+    /// ytan sparades — eller på en enhet utan scenrekonstruktion.
+    private func geometry() async -> Entity? {
+        if let mesh = store.sceneMesh(for: room), let entity = SceneMeshEntity.make(from: mesh) {
+            return entity
+        }
+        return try? await Entity(contentsOf: store.modelURL(for: room))
     }
 
     private func showVariant() {

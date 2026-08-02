@@ -118,7 +118,8 @@ struct RoomScanView: View {
             let saved = try store.save(captured,
                                        name: name.trimmingCharacters(in: .whitespaces),
                                        keyframes: scan.keyframes,
-                                       photoDirectory: scan.photoDirectory)
+                                       photoDirectory: scan.photoDirectory,
+                                       sceneMesh: scan.sceneMesh)
             onSaved(saved)
             dismiss()
         } catch {
