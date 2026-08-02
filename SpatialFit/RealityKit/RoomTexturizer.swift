@@ -144,6 +144,9 @@ enum RoomTexturizer {
 
     // MARK: - Bygga en texturerad del
 
+    /// `MeshResource` och `ModelEntity` hör hemma på huvudtråden — RealityKit
+    /// isolerar dem dit i Swift 6.
+    @MainActor
     private static func texturedPart(group: [ViewSelection.Triangle],
                                      keyframe: Keyframe,
                                      directory: URL) async throws -> Entity {
