@@ -78,7 +78,10 @@ final class RoomSceneController {
 
     private func applySurfaceMaterial(to entity: Entity) {
         if var component = entity.components[ModelComponent.self] {
-            component.materials = component.materials.map { _ in Self.surfaceMaterial }
+            // En `ModelComponent` utan material kraschar RealityKit vid rendering,
+            // och RoomPlans export har inte alltid ett per del.
+            let replaced = component.materials.map { _ in Self.surfaceMaterial }
+            component.materials = replaced.isEmpty ? [Self.surfaceMaterial] : replaced
             entity.components.set(component)
         }
         for child in entity.children {

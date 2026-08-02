@@ -24,13 +24,13 @@ final class KeyframeRecorder {
     private let maximumCount: Int
     /// Bredd i pixlar på den sparade bilden. Full sensorupplösning ger inte
     /// bättre textur än vad mesh:ens triangelstorlek klarar av att visa.
-    private let targetWidth: CGFloat = 1024
+    private let targetWidth: CGFloat = 768
 
     private let context = CIContext(options: [.useSoftwareRenderer: false])
     private var timer: Timer?
     private weak var session: ARSession?
 
-    init(directory: URL, maximumCount: Int = 40) {
+    init(directory: URL, maximumCount: Int = 24) {
         self.directory = directory
         self.maximumCount = maximumCount
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

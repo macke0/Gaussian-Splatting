@@ -42,7 +42,11 @@ final class RoomStore {
             rooms = []
             return
         }
-        rooms = stored.sorted { $0.scannedAt > $1.scannedAt }
+        // Rum vars mapp saknas kan inte öppnas. De listas inte, så kunden inte
+        // klickar sig in i ett tomt rum.
+        rooms = stored
+            .filter { fileManager.fileExists(atPath: modelURL(for: $0).path) }
+            .sorted { $0.scannedAt > $1.scannedAt }
     }
 
     func directory(for room: SavedRoom) -> URL {

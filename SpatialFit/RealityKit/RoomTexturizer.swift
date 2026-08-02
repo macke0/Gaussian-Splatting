@@ -170,6 +170,9 @@ enum RoomTexturizer {
             }
         }
 
+        // En tom mesh kraschar `MeshResource.generate` i stället för att kasta.
+        guard !indices.isEmpty else { throw Failure.nothingVisible }
+
         var descriptor = MeshDescriptor(name: "kf\(keyframe.id)")
         descriptor.positions = MeshBuffers.Positions(positions)
         descriptor.normals = MeshBuffers.Normals(normals)
