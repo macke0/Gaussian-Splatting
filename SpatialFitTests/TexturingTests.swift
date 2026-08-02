@@ -195,6 +195,78 @@ struct TexturingTests {
         #expect(chosen.id == 5)
     }
 
+    // MARK: - Sammanhängande val
+
+    /// En remsa av trianglar i planet z = −2 med delade hörn, så att
+    /// grannskapet går att hitta.
+    static func strip(columns: Int) -> [ViewSelection.Triangle] {
+        var result: [ViewSelection.Triangle] = []
+        for column in 0..<columns {
+            let left = Float(column) * 0.1 - Float(columns) * 0.05
+            let right = left + 0.1
+            result.append(ViewSelection.Triangle(SIMD3(left, -0.05, -2),
+                                                 SIMD3(right, -0.05, -2),
+                                                 SIMD3(left, 0.05, -2)))
+            result.append(ViewSelection.Triangle(SIMD3(right, -0.05, -2),
+                                                 SIMD3(right, 0.05, -2),
+                                                 SIMD3(left, 0.05, -2)))
+        }
+        return result
+    }
+
+    @Test("Varannan-mönstret jämnas ut till en sammanhängande yta")
+    func smoothingCollapsesAlternatingChoices() {
+        // Remsans trianglar pekar omväxlande nedåt och uppåt, så en kamera över
+        // och en under vinner varannan triangel. Var för sig är valen riktiga,
+        // men randigt är precis vad väggen inte ska bli.
+        let below = Self.camera(at: SIMD3(0, -0.3, 0), id: 1)
+        let above = Self.camera(at: SIMD3(0, 0.3, 0), id: 2)
+        let triangles = Self.strip(columns: 6)
+
+        let raw = ViewSelection.assign(triangles: triangles, keyframes: [below, above],
+                                       depth: Self.noDepth, passes: 0)
+        #expect(Set(raw.compactMap { $0 }).count == 2)
+
+        let smoothed = ViewSelection.assign(triangles: triangles, keyframes: [below, above],
+                                            depth: Self.noDepth)
+        #expect(Set(smoothed.compactMap { $0 }).count == 1)
+    }
+
+    @Test("Utjämningen hittar inte på en bild där ingen dög")
+    func smoothingKeepsUnseenTrianglesUnpainted() {
+        // Remsan ligger bakom kameran.
+        let behind = Self.camera(at: SIMD3(0, 0, -4), id: 1)
+        let labels = ViewSelection.assign(triangles: Self.strip(columns: 4),
+                                          keyframes: [behind],
+                                          depth: Self.noDepth)
+
+        #expect(labels.allSatisfy { $0 == nil })
+    }
+
+    @Test("Utan utjämningspass står varje triangels eget val kvar")
+    func zeroPassesLeavesTheRawChoice() {
+        let triangles = Self.strip(columns: 4)
+        let keyframes = [Self.camera(at: SIMD3(-0.4, 0, 0), id: 1),
+                         Self.camera(at: SIMD3(0.4, 0, 0), id: 2)]
+
+        let raw = ViewSelection.assign(triangles: triangles, keyframes: keyframes,
+                                       depth: Self.noDepth, passes: 0)
+        let expected = triangles.map {
+            ViewSelection.best(for: $0, among: keyframes, depth: Self.noDepth)?.id
+        }
+        #expect(raw == expected)
+    }
+
+    @Test("En yta längre bort än räckvidden målas inte")
+    func distantSurfaceIsRejected() {
+        let far = ViewSelection.Triangle(SIMD3(-0.2, -0.2, -8),
+                                         SIMD3(0.2, -0.2, -8),
+                                         SIMD3(0, 0.2, -8))
+        #expect(ViewSelection.best(for: far,
+                                   among: [Self.camera(at: .zero)],
+                                   depth: Self.noDepth) == nil)
+    }
+
     // MARK: - Djupuppslag
 
     @Test("Bildens hörn slår upp djupkartans hörn")

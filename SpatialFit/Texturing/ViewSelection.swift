@@ -51,8 +51,12 @@ enum ViewSelection {
     /// som skymd. Marginalen täcker LiDAR-brus och mesh:ens egen utjämning.
     static let occlusionToleranceM: Float = 0.12
 
-    /// Minsta `cos(vinkel)` mellan ytans normal och siktlinjen. 0.2 ≈ 78°.
-    static let minimumFacing: Float = 0.2
+    /// Minsta `cos(vinkel)` mellan ytans normal och siktlinjen. 0.35 ≈ 70°.
+    /// Snävare än så blir texturen märkbart utsmetad.
+    static let minimumFacing: Float = 0.35
+
+    /// Längre bort än så upptar ytan för få pixlar för att måla med.
+    static let maximumDistanceM: Float = 4.5
 
     static func best(for triangle: Triangle,
                      among keyframes: [Keyframe],
@@ -86,7 +90,7 @@ enum ViewSelection {
 
         let toCamera = keyframe.position - triangle.centroid
         let distance = simd_length(toCamera)
-        guard distance > 0.05 else { return nil }
+        guard distance > 0.05, distance < maximumDistanceM else { return nil }
 
         // Mesh-normalen kan peka åt endera hållet; det som räknas är att ytan
         // ses någotsånär rakt på.
@@ -100,5 +104,116 @@ enum ViewSelection {
         }
 
         return facing / distance
+    }
+
+    // MARK: - Sammanhängande val
+
+    /// Hur mycket sämre en grannes bild får vara innan sammanhanget väger
+    /// tyngre. Ett foto som ser ytan halvt så bra men målar hela väggen är
+    /// bättre än två foton som möts mitt på den.
+    static let coherenceTolerance: Float = 0.45
+
+    /// Väljer bild för varje triangel och jämnar sedan ut valet mellan grannar.
+    ///
+    /// Poängen `facing / distance` växlar snabbt över en yta, så det bästa
+    /// fotot skiftar från triangel till triangel. Var för sig är valen riktiga,
+    /// men resultatet blir ett lapptäcke där varje lapp har sin egen exponering
+    /// och sin egen lilla feljustering. Utjämningen låter stora sammanhängande
+    /// områden dela foto, vilket är vad ögat läser som ett rum.
+    ///
+    /// - Returns: en keyframe-id per triangel, `nil` där ingen bild dög.
+    static func assign(triangles: [Triangle],
+                       keyframes: [Keyframe],
+                       depth: DepthLookup,
+                       passes: Int = 4) -> [Int?] {
+        var labels = triangles.map { best(for: $0, among: keyframes, depth: depth)?.id }
+        guard passes > 0, !labels.isEmpty else { return labels }
+
+        let byID = Dictionary(keyframes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let neighbours = adjacency(of: triangles)
+
+        for _ in 0..<passes {
+            var changed = false
+            // Uppdateringen sker på plats. Räknade man i stället fram alla nya
+            // val ur de gamla skulle två grannar kunna byta med varandra om och
+            // om igen utan att någonsin mötas.
+            for index in triangles.indices {
+                guard let current = labels[index],
+                      let normal = triangles[index].normal,
+                      let candidate = majority(around: index, in: neighbours, labels: labels),
+                      candidate != current,
+                      let alternative = byID[candidate],
+                      let own = byID[current] else { continue }
+
+                guard let ownScore = score(triangle: triangles[index], normal: normal,
+                                           keyframe: own, depth: depth),
+                      let candidateScore = score(triangle: triangles[index], normal: normal,
+                                                 keyframe: alternative, depth: depth),
+                      candidateScore >= ownScore * coherenceTolerance else { continue }
+                labels[index] = candidate
+                changed = true
+            }
+            if !changed { break }
+        }
+        return labels
+    }
+
+    /// Den bild fler än hälften av grannarna använder, om en sådan finns.
+    /// Står två bilder lika får triangeln behålla sitt eget val — kanten mellan
+    /// två foton måste ju gå någonstans.
+    private static func majority(around index: Int,
+                                 in neighbours: [[Int]],
+                                 labels: [Int?]) -> Int? {
+        var counts: [Int: Int] = [:]
+        var total = 0
+        for neighbour in neighbours[index] {
+            guard let label = labels[neighbour] else { continue }
+            counts[label, default: 0] += 1
+            total += 1
+        }
+        guard let winner = counts.max(by: { $0.value < $1.value }),
+              winner.value * 2 > total else { return nil }
+        return winner.key
+    }
+
+    /// Trianglarna kommer utan delade index — varje hörn står för sig självt.
+    /// Grannskapet byggs därför på hörnens läge, avrundat till millimeter så
+    /// att flyttalsbrus inte river isär en kant som geometriskt är delad.
+    private static func adjacency(of triangles: [Triangle]) -> [[Int]] {
+        var byEdge: [Edge: [Int]] = [:]
+        byEdge.reserveCapacity(triangles.count * 3)
+
+        for (index, triangle) in triangles.enumerated() {
+            let corners = [key(triangle.a), key(triangle.b), key(triangle.c)]
+            for corner in 0..<3 {
+                byEdge[Edge(corners[corner], corners[(corner + 1) % 3]), default: []].append(index)
+            }
+        }
+
+        var result = [[Int]](repeating: [], count: triangles.count)
+        for (_, sharing) in byEdge where sharing.count > 1 {
+            for index in sharing {
+                result[index].append(contentsOf: sharing.lazy.filter { $0 != index })
+            }
+        }
+        return result
+    }
+
+    private struct Edge: Hashable {
+        let low: SIMD3<Int32>
+        let high: SIMD3<Int32>
+
+        /// Kanten är oriktad, så hörnen sorteras innan de får bli nyckel.
+        init(_ first: SIMD3<Int32>, _ second: SIMD3<Int32>) {
+            let ordered = (first.x, first.y, first.z) <= (second.x, second.y, second.z)
+            low = ordered ? first : second
+            high = ordered ? second : first
+        }
+    }
+
+    private static func key(_ point: SIMD3<Float>) -> SIMD3<Int32> {
+        SIMD3(Int32((point.x * 1000).rounded()),
+              Int32((point.y * 1000).rounded()),
+              Int32((point.z * 1000).rounded()))
     }
 }

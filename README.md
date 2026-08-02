@@ -79,13 +79,24 @@ packa om pixlar, och kostar en ritning per keyframe.
 
 1. **Alla tre hörnen syns i bilden.** Räcker bilden inte till hela triangeln
    sträcks texturen över kanten och rummet blir randigt.
-2. **Ytan är vänd mot kameran** (`cos ≥ 0.2`). En vägg fotograferad snett
-   bakifrån ger utsmetade pixlar.
+2. **Ytan är vänd mot kameran** (`cos ≥ 0.35`) och närmare än 4,5 m. En vägg
+   fotograferad snett bakifrån eller från andra sidan rummet ger utsmetade
+   pixlar.
 3. **Ytan låg faktiskt främst.** LiDAR-djupet i keyframen jämförs med
    triangelns avstånd, med 12 cm marginal för brus. Utan det testet målas
    väggen bakom en spis rakt ut över spisen.
 
 Bland kandidaterna vinner `facing / distance` — rakt på och nära.
+
+Det räcker inte. Poängen växlar snabbt över en yta, så det bästa fotot skiftar
+från triangel till triangel. Var för sig är valen riktiga, men resultatet blir
+ett lapptäcke där varje lapp har sin egen exponering och sin egen lilla
+feljustering. `ViewSelection.assign` jämnar därför ut valet: en triangel byter
+till den bild fler än hälften av dess grannar redan använder, så länge den
+bilden inte är påtagligt sämre. Grannskapet byggs ur hörnens läge avrundat till
+millimeter, eftersom trianglarna kommer utan delade index. Uppdateringen sker på
+plats — räknade man fram alla nya val ur de gamla skulle två grannar kunna byta
+med varandra i all evighet utan att någonsin mötas.
 
 Materialet är `UnlitMaterial` med flit: ljuset ligger redan i fotot. Med PBR och
 scenens lampor blir rummet dubbelbelyst. Den grå mesh:en finns kvar som
@@ -240,10 +251,12 @@ larma mot golvet den står på.
 
 ## Kända begränsningar i prototypen
 
-1. **Textureringen är okörd mot riktig data.** Projektionen och vy-valet är
-   testade mot en påhittad kamerarigg, men hela kedjan har aldrig sett en
-   verklig skanning. Skarvarna mellan keyframes får troligen synliga
-   ljusskillnader, eftersom ingen färgutjämning görs mellan bilderna.
+1. **Skarvarna mellan foton syns.** Utjämningen ger stora sammanhängande
+   områden i stället för ett lapptäcke, men där två foton möts finns ett hopp i
+   exponering — ingen färgutjämning görs mellan bilderna. Nästa steg vore att
+   baka en texturatlas där varje texel blandar flera vyer, i stället för att
+   varje triangel väljer en enda. Ytor som ingen bild såg tillräckligt bra
+   lämnas omålade och blir hål.
 2. **Nischprecisionen är oprövad på riktigt.** `NicheFinder` och
    `CapturedRoomReader` är testade mot syntetisk data. Först mot en tumstock
    visar det sig om RoomPlans skåpsdimensioner räcker för millimetersnack,

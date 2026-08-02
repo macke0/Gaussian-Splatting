@@ -132,12 +132,12 @@ enum RoomTexturizer {
     private static func assign(triangles: [ViewSelection.Triangle],
                                to keyframes: [Keyframe],
                                depth: ViewSelection.DepthLookup) -> [Int: [ViewSelection.Triangle]] {
+        let labels = ViewSelection.assign(triangles: triangles, keyframes: keyframes, depth: depth)
+
         var groups: [Int: [ViewSelection.Triangle]] = [:]
-        for triangle in triangles {
-            guard let keyframe = ViewSelection.best(for: triangle,
-                                                    among: keyframes,
-                                                    depth: depth) else { continue }
-            groups[keyframe.id, default: []].append(triangle)
+        for (triangle, label) in zip(triangles, labels) {
+            guard let label else { continue }
+            groups[label, default: []].append(triangle)
         }
         return groups
     }

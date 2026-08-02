@@ -30,7 +30,9 @@ final class KeyframeRecorder {
     private var timer: Timer?
     private weak var session: ARSession?
 
-    init(directory: URL, maximumCount: Int = 24) {
+    /// - Parameter maximumCount: fotobudgeten. Tar den slut mitt i skanningen
+    ///   saknar resten av rummet bild, och ytorna målas från fel håll.
+    init(directory: URL, maximumCount: Int = 40) {
         self.directory = directory
         self.maximumCount = maximumCount
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
