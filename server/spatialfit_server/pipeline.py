@@ -33,6 +33,12 @@ DEFAULT_ATLAS_SIZE = 2048
 #: varken atlasen eller telefonens renderare har någon nytta av.
 DEFAULT_TARGET_FACES = 120_000
 
+#: Var färgen kommer ifrån. ``blend`` väger ihop fotona direkt och kräver bara
+#: CPU. ``splat`` tränar en gaussian splat först och målar med renderade vyer —
+#: bättre på hål och skarvar, men kräver CUDA.
+COLOR_SOURCES = ("blend", "splat")
+DEFAULT_COLOR_SOURCE = "blend"
+
 
 @dataclass
 class BakedRoom:
@@ -49,7 +55,11 @@ class BakedRoom:
 
 def bake_room(directory: Path,
               atlas_size: int = DEFAULT_ATLAS_SIZE,
-              target_faces: int = DEFAULT_TARGET_FACES) -> BakedRoom:
+              target_faces: int = DEFAULT_TARGET_FACES,
+              color_source: str = DEFAULT_COLOR_SOURCE) -> BakedRoom:
+    if color_source not in COLOR_SOURCES:
+        raise ValueError(f"okänd färgkälla {color_source!r}, välj en av {COLOR_SOURCES}")
+
     bundle = ScanBundle.load(directory)
     if bundle.mesh.is_empty:
         raise ValueError("skanningen innehåller ingen yta")
@@ -69,7 +79,7 @@ def bake_room(directory: Path,
     unwrapped = atlas_module.rasterize(positions, normals, uvs, faces, atlas_size)
     log.info("atlasen täcker %.1f %% av ytan", unwrapped.coverage * 100)
 
-    result = bake(unwrapped, bundle.keyframes)
+    result = bake(unwrapped, _painting_views(bundle, color_source))
     log.info("%.1f %% av texlarna såg minst ett foto", result.seen_fraction * 100)
 
     return BakedRoom(mesh=TexturedMesh(positions=positions, normals=normals,
@@ -77,6 +87,23 @@ def bake_room(directory: Path,
                      texture=result.texture,
                      seen_fraction=result.seen_fraction,
                      triangle_count=len(faces))
+
+
+def _painting_views(bundle: "ScanBundle", color_source: str) -> list:
+    """Fotona att måla med — antingen kamerans egna eller splattens renderade.
+
+    Att låta splatten lämna ifrån sig ``Keyframe`` i stället för färg direkt gör
+    att ``bake`` inte behöver veta att den finns: viktning, skymningstest och
+    utfyllnad fungerar likadant på en renderad vy som på ett foto.
+    """
+    if color_source == "blend":
+        return bundle.keyframes
+
+    from .splat import synthetic_keyframes, train
+
+    model = train(bundle)
+    log.info("tränade %d gaussare", len(model))
+    return synthetic_keyframes(model, bundle)
 
 
 def _cleaned(positions: np.ndarray, faces: np.ndarray,

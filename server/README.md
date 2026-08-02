@@ -22,6 +22,7 @@ room.mesh + keyframes.json + kfN.jpg/.depth
   ├─ pipeline.py  slår ihop dubbletter, kastar flagor, jämnar ut (Taubin), glesar ut
   ├─ atlas.py     veckar ut ytan med xatlas och rasteriserar varje texel till en
   │               världspunkt + normal
+  ├─ splat.py     (valfritt) tränar en gaussian splat och renderar nya foton
   ├─ bake.py      projicerar varje texel in i varje foto, viktar och blandar
   └─ mesh.py      skriver SFTEX001, samma format som Model/TexturedMesh.swift läser
 ```
@@ -40,13 +41,26 @@ fylls ut från sina grannar.
 Djupkartan används för skymningstest: ser fotot något närmare än texeln är den
 skymd. Djup `0` betyder att LiDAR inte nådde dit, inte att något står i vägen.
 
-### Var gaussian splatting kopplas in
+### Gaussian splatting som färgkälla
 
-Färgkällan sitter isolerad i `bake.py`. Ett tränat splat skulle rendera texelns
-världspunkt i stället för att slå upp den i fotona — allt annat (utveckling,
-texel→värld, skymningstest, atlasskrivning) är identiskt. Det är därför den
-enklare blandningen är byggd först: hela rundturen telefon → server → telefon går
-att verifiera innan ett träningssteg läggs till.
+`--color-source splat` skjuter in ett steg *före* bakningen: `splat.py` tränar
+gaussare mot rummets egna foton och renderar sedan nya foton från samma poser
+plus några inskjutna emellan. De går rakt in i `bake()` som vanliga `Keyframe`.
+
+Fogen är alltså `Keyframe`, inte färgen inuti `bake.py`. Det är den billigare
+fogen: viktning, skymningstest och utfyllnad fungerar likadant på en renderad vy
+som på ett foto, så `bake.py` behöver inte veta att splatten finns. Vinsten mot
+den råa blandningen är tre saker — hål fylls (en virtuell kamera kan stå där
+ingen råkade fota), bruset jämnas ut, och exponeringshoppen försvinner eftersom
+en och samma modell renderar allt.
+
+Två avsteg från 3DGS som det brukar se ut: **ingen sfärisk harmonik** (en diffus
+atlas kan ändå inte bära vy-beroende ljus, och högre grad hade bakat in en
+spegling som en fläck i väggen) och **ingen förtätning** (vi startar i LiDAR-ytans
+hörn, geometrin är redan tät). Poserna är låsta — låter man dem glida får man en
+vackrare rendering av fel rum.
+
+`blend` är förvalet och kräver bara CPU. `splat` kräver CUDA, torch och gsplat.
 
 ## Köra
 
@@ -77,13 +91,23 @@ tiden — de tar dubbelt så mycket RAM.
 
 ### På en maskin med GPU
 
-Ingenting i pipen kräver CUDA i dag; xatlas och trimesh är CPU-bundna. GPU:n
-börjar spela roll först när splatting kopplas in. Kör över SSH:
+Bara `--color-source splat` kräver CUDA; xatlas och trimesh är CPU-bundna. Kör
+över SSH:
 
 ```bash
 ssh maskinen
 tmux new -s bake
 cd ~/spatialfit/server && .venv/bin/python -m uvicorn spatialfit_server.service:app --host 0.0.0.0 --port 8000
+```
+
+torch och gsplat står inte i `requirements.txt` — de måste byggas mot maskinens
+egen CUDA. På ett RTX 5090 (Blackwell, sm_120) krävs CUDA 12.8 eller nyare, och
+gsplats PyPI-hjul saknar kompilerad extension:
+
+```bash
+.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu128
+.venv/bin/pip install ninja
+.venv/bin/pip install --no-build-isolation --no-binary gsplat gsplat
 ```
 
 Öppna inte porten mot internet. Det finns ingen autentisering, och uppladdningen
@@ -93,7 +117,7 @@ packar upp ett zip-arkiv.
 
 | | |
 |---|---|
-| `POST /bake` | multipart-fält `scan`, ett zip av rummets mapp → `{"id", "status"}` |
+| `POST /bake` | multipart-fält `scan` (zip av rummets mapp) och valfritt `color_source` → `{"id", "status"}` |
 | `GET /bake/{id}` | `{"status", "detail", "seenFraction", "triangleCount"}` |
 | `GET /bake/{id}/mesh` | `baked.mesh` |
 | `GET /bake/{id}/texture` | `baked.png` |

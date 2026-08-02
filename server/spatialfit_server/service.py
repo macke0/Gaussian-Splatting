@@ -20,10 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from .pipeline import bake_room
+from .pipeline import COLOR_SOURCES, DEFAULT_COLOR_SOURCE, bake_room
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ class Job:
     status: str = "pending"
     detail: str = ""
     directory: Path | None = None
+    color_source: str = DEFAULT_COLOR_SOURCE
     seen_fraction: float = 0.0
     triangle_count: int = 0
     result: Path | None = field(default=None)
@@ -47,8 +48,13 @@ workers = ThreadPoolExecutor(max_workers=1)
 
 
 @app.post("/bake")
-async def start_bake(scan: UploadFile) -> dict:
-    job = Job(id=uuid.uuid4().hex)
+async def start_bake(scan: UploadFile,
+                     color_source: str = Form(DEFAULT_COLOR_SOURCE)) -> dict:
+    if color_source not in COLOR_SOURCES:
+        raise HTTPException(status_code=400,
+                            detail=f"okänd färgkälla {color_source!r}")
+
+    job = Job(id=uuid.uuid4().hex, color_source=color_source)
     directory = Path(tempfile.mkdtemp(prefix=f"bake-{job.id}-"))
     job.directory = directory
 
@@ -104,7 +110,7 @@ def _file(job_id: str, name: str, media_type: str) -> FileResponse:
 def _run(job: Job, room: Path) -> None:
     job.status = "running"
     try:
-        baked = bake_room(room)
+        baked = bake_room(room, color_source=job.color_source)
         output = room.parent / "output"
         baked.write(output)
 

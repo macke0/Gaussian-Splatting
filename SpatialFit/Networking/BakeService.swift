@@ -18,6 +18,24 @@ struct BakeService: Sendable {
 
     let server: URL
 
+    /// Var servern hämtar färgen ifrån. Namnen är serverns egna.
+    enum ColorSource: String, Sendable, CaseIterable, Identifiable {
+        /// Väger ihop fotona direkt. Går på vilken maskin som helst.
+        case blend
+        /// Tränar en gaussian splat först och målar med renderade vyer. Bättre
+        /// på hål och skarvar, men servern måste ha en CUDA-GPU.
+        case splat
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .blend: "Blanda fotona"
+            case .splat: "Gaussian splatting"
+            }
+        }
+    }
+
     struct Summary: Sendable, Equatable {
         /// Andelen av ytan som minst ett foto såg. Resten är utfylld grå.
         let seenFraction: Double
@@ -54,12 +72,13 @@ struct BakeService: Sendable {
     @discardableResult
     func bake(uploading files: [URL],
               into destination: URL,
+              colorSource: ColorSource = .blend,
               report: @Sendable (String) -> Void = { _ in }) async throws -> Summary {
         let archive = try Self.archive(files)
         defer { try? FileManager.default.removeItem(at: archive.deletingLastPathComponent()) }
 
         report("Laddar upp skanningen…")
-        let job = try await start(archive)
+        let job = try await start(archive, colorSource: colorSource)
 
         report("Servern bakar rummet…")
         let summary = try await wait(for: job)
@@ -74,14 +93,14 @@ struct BakeService: Sendable {
 
     // MARK: - Stegen
 
-    private func start(_ archive: URL) async throws -> String {
+    private func start(_ archive: URL, colorSource: ColorSource) async throws -> String {
         let boundary = "spatialfit.\(UUID().uuidString)"
         var request = URLRequest(url: server.appending(path: "bake"))
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)",
                          forHTTPHeaderField: "Content-Type")
 
-        let body = try Self.multipart(archive, boundary: boundary)
+        let body = try Self.multipart(archive, colorSource: colorSource, boundary: boundary)
         let (data, response) = try await URLSession.shared.upload(for: request, fromFile: body)
         try Self.check(response, data)
         try? FileManager.default.removeItem(at: body)
@@ -161,7 +180,9 @@ struct BakeService: Sendable {
 
     /// Kroppen skrivs till fil i stället för att byggas i minnet. Ett rum med
     /// hundra foton och djupkartor är hundratals megabyte.
-    private static func multipart(_ archive: URL, boundary: String) throws -> URL {
+    private static func multipart(_ archive: URL,
+                                  colorSource: ColorSource,
+                                  boundary: String) throws -> URL {
         let body = archive.deletingLastPathComponent().appending(path: "body")
         let manager = FileManager.default
         manager.createFile(atPath: body.path, contents: nil)
@@ -169,7 +190,13 @@ struct BakeService: Sendable {
         let handle = try FileHandle(forWritingTo: body)
         defer { try? handle.close() }
 
+        // Färgkällan först: den är några byte, och servern läser fälten i tur
+        // och ordning.
         let header = """
+            --\(boundary)\r
+            Content-Disposition: form-data; name="color_source"\r
+            \r
+            \(colorSource.rawValue)\r
             --\(boundary)\r
             Content-Disposition: form-data; name="scan"; filename="scan.zip"\r
             Content-Type: application/zip\r

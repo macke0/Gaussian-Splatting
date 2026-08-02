@@ -11,7 +11,8 @@ import logging
 import sys
 from pathlib import Path
 
-from .pipeline import DEFAULT_ATLAS_SIZE, DEFAULT_TARGET_FACES, bake_room
+from .pipeline import (COLOR_SOURCES, DEFAULT_ATLAS_SIZE, DEFAULT_COLOR_SOURCE,
+                       DEFAULT_TARGET_FACES, bake_room)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,6 +23,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="var baked.mesh och baked.png ska hamna")
     parser.add_argument("--atlas-size", type=int, default=DEFAULT_ATLAS_SIZE)
     parser.add_argument("--target-faces", type=int, default=DEFAULT_TARGET_FACES)
+    parser.add_argument("--color-source", choices=COLOR_SOURCES,
+                        default=DEFAULT_COLOR_SOURCE,
+                        help="blend väger ihop fotona, splat tränar först (kräver CUDA)")
     arguments = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -29,8 +33,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         baked = bake_room(arguments.directory,
                           atlas_size=arguments.atlas_size,
-                          target_faces=arguments.target_faces)
-    except (FileNotFoundError, ValueError) as error:
+                          target_faces=arguments.target_faces,
+                          color_source=arguments.color_source)
+    except (FileNotFoundError, ValueError, RuntimeError) as error:
         print(f"Gick inte att baka: {error}", file=sys.stderr)
         return 1
 

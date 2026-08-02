@@ -27,7 +27,8 @@ final class RoomBakeModel {
         if case .working = phase { true } else { false }
     }
 
-    func bake(_ room: SavedRoom, in store: RoomStore, server: URL) async {
+    func bake(_ room: SavedRoom, in store: RoomStore, server: URL,
+              colorSource: BakeService.ColorSource) async {
         phase = .working("Förbereder skanningen…")
 
         let service = BakeService(server: server)
@@ -35,7 +36,9 @@ final class RoomBakeModel {
         let destination = store.directory(for: room)
 
         do {
-            let summary = try await service.bake(uploading: files, into: destination) { message in
+            let summary = try await service.bake(uploading: files,
+                                                 into: destination,
+                                                 colorSource: colorSource) { message in
                 Task { @MainActor in self.phase = .working(message) }
             }
             phase = .done(summary)

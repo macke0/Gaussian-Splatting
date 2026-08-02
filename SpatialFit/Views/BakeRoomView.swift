@@ -18,6 +18,7 @@ struct BakeRoomView: View {
     var onFinished: () -> Void
 
     @AppStorage("bakeServer") private var address = ""
+    @AppStorage("bakeColorSource") private var colorSource = BakeService.ColorSource.blend.rawValue
     @State private var model = RoomBakeModel()
     @Environment(\.dismiss) private var dismiss
 
@@ -36,6 +37,18 @@ struct BakeRoomView: View {
                 } footer: {
                     Text("Bakningen sker på en dator i butiken. Telefonen mäter, "
                          + "servern målar.")
+                }
+
+                Section {
+                    Picker("Färg", selection: $colorSource) {
+                        ForEach(BakeService.ColorSource.allCases) { source in
+                            Text(source.label).tag(source.rawValue)
+                        }
+                    }
+                    .disabled(model.isWorking)
+                } footer: {
+                    Text("Gaussian splatting fyller hål och jämnar ut skarvar, men "
+                         + "kräver att servern har ett grafikkort.")
                 }
 
                 Section {
@@ -111,7 +124,8 @@ struct BakeRoomView: View {
     private func start() {
         guard let server else { return }
         Task {
-            await model.bake(room, in: store, server: server)
+            await model.bake(room, in: store, server: server,
+                             colorSource: .init(rawValue: colorSource) ?? .blend)
             if case .done = model.phase { onFinished() }
         }
     }

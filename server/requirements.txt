@@ -11,4 +11,11 @@ python-multipart>=0.0.9
 # längre tid och ger en större fil, men samma bild.
 fast-simplification>=0.1.7; python_version >= "3.10"
 
+# Färgkällan ``splat``. Står inte med här: de måste byggas mot maskinens egen
+# CUDA (5090 är Blackwell, sm_120, och kräver CUDA 12.8+), och ``blend`` ska gå
+# att köra på en laptop utan GPU. Se README.
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   pip install --no-build-isolation --no-binary gsplat gsplat
+
 pytest>=8.0
