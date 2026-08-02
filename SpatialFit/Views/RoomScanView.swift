@@ -2,9 +2,9 @@
 //  RoomScanView.swift
 //  SpatialFit
 //
-//  Skanningsflödet: RoomPlans egen vy, sedan en lista över de nischer som
-//  hittades. Vilken nisch kunden menar är en UI-fråga, inte en geometrisk –
-//  därför väljer användaren, och `NicheFinder` gissar inte.
+//  Skanningsflödet: RoomPlans egen vy, sedan en sammanfattning där rummet får
+//  ett namn och sparas. Nischvalet sker inte här längre – det hör hemma när
+//  kunden ska placera en produkt, inte när rummet mäts upp.
 //
 
 import SwiftUI
@@ -12,11 +12,14 @@ import RoomPlan
 
 struct RoomScanView: View {
 
-    /// Anropas med den nisch användaren pekade ut.
-    let onPick: (ScannedNiche) -> Void
+    let store: RoomStore
+    /// Anropas med det sparade rummet, så att biblioteket kan öppna det direkt.
+    var onSaved: (SavedRoom) -> Void = { _ in }
 
     @Environment(\.dismiss) private var dismiss
     @State private var scan = RoomScanModel()
+    @State private var name = ""
+    @State private var saveError: String?
 
     var body: some View {
         NavigationStack {
@@ -37,7 +40,10 @@ struct RoomScanView: View {
                     }
                 }
         }
-        .onAppear { scan.start() }
+        .onAppear {
+            name = "Rum \(store.rooms.count + 1)"
+            scan.start()
+        }
     }
 
     @ViewBuilder
@@ -46,7 +52,7 @@ struct RoomScanView: View {
         case .unsupported:
             message(icon: "iphone.slash",
                     title: "Enheten saknar LiDAR",
-                    detail: "Skanning kräver en iPhone Pro eller iPad Pro. Demot kör vidare på mockad nischdata.")
+                    detail: "Skanning kräver en iPhone Pro eller iPad Pro.")
 
         case .scanning:
             if let captureView = scan.captureView {
@@ -64,40 +70,55 @@ struct RoomScanView: View {
                     title: "Skanningen misslyckades",
                     detail: reason)
 
-        case .finished(let niches):
-            if niches.isEmpty {
-                message(icon: "questionmark.square.dashed",
-                        title: "Hittade ingen nisch",
-                        detail: "Skanningen behöver se två skåp eller vitvaror som står mot samma vägg med ett mellanrum emellan. Gå närmare och skanna om.")
-            } else {
-                nicheList(niches)
-            }
+        case .finished(let captured, let niches):
+            summary(captured: captured, niches: niches)
         }
     }
 
     private var scanningHint: some View {
-        Text("Gå långsamt längs väggen och håll skåpens sidor i bild.")
+        Text("Gå långsamt runt rummet och håll väggar, golv och möbler i bild.")
             .font(.footnote)
+            .multilineTextAlignment(.center)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.ultraThinMaterial, in: Capsule())
+            .padding(.horizontal, 24)
             .padding(.bottom, 24)
     }
 
-    private func nicheList(_ niches: [ScannedNiche]) -> some View {
-        List(niches) { found in
-            Button {
-                onPick(found)
-                dismiss()
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(found.niche.dimensions.shortDescription)
-                        .font(.headline)
-                    Text("\(found.niche.label) · ±\(Units.format(found.niche.toleranceMM))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private func summary(captured: CapturedRoom, niches: [ScannedNiche]) -> some View {
+        Form {
+            Section("Namn") {
+                TextField("Namn på rummet", text: $name)
+            }
+
+            Section("Skanningen") {
+                LabeledContent("Väggar", value: "\(captured.walls.count)")
+                LabeledContent("Möbler och vitvaror", value: "\(captured.objects.count)")
+                LabeledContent("Nischer", value: "\(niches.count)")
+            }
+
+            if let saveError {
+                Section {
+                    Text(saveError)
+                        .foregroundStyle(.red)
                 }
             }
+
+            Section {
+                Button("Spara rummet") { save(captured) }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    private func save(_ captured: CapturedRoom) {
+        do {
+            let saved = try store.save(captured, name: name.trimmingCharacters(in: .whitespaces))
+            onSaved(saved)
+            dismiss()
+        } catch {
+            saveError = "Kunde inte spara rummet: \(error.localizedDescription)"
         }
     }
 

@@ -22,7 +22,9 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         case unsupported
         case scanning
         case processing
-        case finished([ScannedNiche])
+        /// Rummet i sin helhet plus de nischer tolkningen hittade. Rummet
+        /// behövs för att kunna spara mesh:en, nischerna för att välja plats.
+        case finished(CapturedRoom, [ScannedNiche])
         case failed(String)
     }
 
@@ -82,7 +84,8 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
             if let error {
                 phase = .failed(error.localizedDescription)
             } else {
-                phase = .finished(NicheFinder.niches(in: CapturedRoomReader.elements(from: processedResult)))
+                let niches = NicheFinder.niches(in: CapturedRoomReader.elements(from: processedResult))
+                phase = .finished(processedResult, niches)
             }
         }
     }

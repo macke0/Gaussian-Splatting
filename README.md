@@ -43,6 +43,29 @@ Utan ett gult case i demot ser zonsystemet ut som en binär ja/nej-kontroll.
 
 Dra för att rotera, nyp för att zooma.
 
+## Flödet i appen
+
+1. **Mina rum** (`RoomLibraryView`) — rummen kunden redan skannat, sparade på
+   disk. Tom första gången.
+2. **Skanna rum** (`RoomScanView`) — RoomPlans egen vy. När skanningen är klar
+   visas en sammanfattning, rummet får ett namn och sparas.
+3. **Rummet i 3D** (`RoomViewerView`) — den rekonstruerade LiDAR-mesh:en, inte
+   de parametriska boxarna. Kameran kretsar kring rummets mitt: dra för att
+   vrida, nyp för att gå in i eller ut ur rummet.
+4. **Lägg till produkt** (`ProductPlacementView`) — välj nisch, prova produkter
+   mot den. Det är här kollisionsmotorn från steg 1 kopplas in.
+
+Ett sparat rum ligger som två filer under `Application Support/Rooms/`: en
+`.usdz` med mesh:en för visning, och en `.json` med `CapturedRoom` så att
+nischerna kan räknas om när mätlogiken förbättras — utan att kunden skannar om.
+Nischerna räknas därför om vid visning i stället för att cachas.
+
+**Mesh:en saknar textur.** RoomPlan levererar geometri, inte färg. Rummet får
+därför ett gråtonat material med tvåsidig rendering (annars försvinner väggarna
+när kameran hamnar innanför dem) och två riktade ljus, så att formen framträder
+via skuggning. Riktig färg kräver att ARKits kamerabilder projiceras på mesh:en
+— det är ett eget steg, inte en inställning.
+
 ## Arkitektur
 
 ```
@@ -52,6 +75,7 @@ SpatialFit/
 │   ├── Geometry.swift       BoxAABB, Obstacle, Intersection. Ren simd.
 │   ├── Product.swift        PIM-bounding box + demokatalog.
 │   ├── RoomElement.swift    Skannat rum som orienterade lådor — utan RoomPlan.
+│   ├── SavedRoom.swift      Metadata om ett sparat rum. Bara Foundation.
 │   └── Niche.swift          Niche, MeasurementSource, NicheSource-protokollet,
 │                            MockKitchenNiche.
 ├── Engine/
@@ -66,16 +90,20 @@ SpatialFit/
 │   └── DepthPointCloud.swift  ARFrame → [DepthSample]. Enda stället som rör
 │                            ARKits djupkarta.
 ├── RoomPlan/
-│   └── CapturedRoomReader.swift  CapturedRoom → [RoomElement] +
-│                            RoomPlanNicheSource. Enda stället som rör RoomPlan.
+│   ├── CapturedRoomReader.swift  CapturedRoom → [RoomElement] +
+│   │                        RoomPlanNicheSource.
+│   ├── RoomScanModel.swift  Skanningens tillstånd + RoomCaptureViewDelegate.
+│   └── RoomStore.swift      Sparade rum på disk: USDZ-mesh + CapturedRoom.
 ├── RealityKit/
 │   ├── PulseSystem.swift    ECS-system för pulserande varningsmaterial.
 │   ├── EntityFactory.swift  lådor, trådramar, måttetiketter.
+│   ├── RoomSceneController.swift  Orbitrigg för att gå runt i ett skannat rum.
 │   └── FitSceneController.swift  FitResult → entiteter. Enda filen som känner
 │                            till både affärslogik och RealityKit.
 ├── ViewModel/FitDemoModel.swift
-├── Views/                   FitDemoView, FitBadgeView, CollisionAlertView,
-│                            ProductPickerBar.
+├── Views/                   RoomLibraryView, RoomScanView, RoomViewerView,
+│                            ProductPlacementView, FitDemoView, FitBadgeView,
+│                            CollisionAlertView, ProductPickerBar.
 └── App/SpatialFitApp.swift
 ```
 
@@ -182,24 +210,26 @@ larma mot golvet den står på.
 
 ## Kända begränsningar i prototypen
 
-1. **Skanningsflödet är okört.** `NicheFinder` och `CapturedRoomReader` är
-   testade mot syntetisk data, och `RoomScanView` är skriven — men RoomPlan
-   kräver LiDAR, så ingen rad av själva skanningen har körts. Först på enhet
+1. **Rummet är gråt.** Mesh:en har rätt form men ingen färg — RoomPlan
+   exporterar geometri, inte textur. Nästa steg mot "som en video" är att
+   projicera ARKits kamerabilder på mesh:en.
+2. **Nischprecisionen är oprövad på riktigt.** `NicheFinder` och
+   `CapturedRoomReader` är testade mot syntetisk data. Först mot en tumstock
    visar det sig om RoomPlans skåpsdimensioner räcker för millimetersnack,
    eller om `Measurement/` måste ta över måtten (steg 3).
-2. **Ett vridet skåp blir sin omslutande låda.** Hinder projiceras ner på
+3. **Ett vridet skåp blir sin omslutande låda.** Hinder projiceras ner på
    nischens bas, så ett skåp som står snett *mot sin egen vägg* blir någon
    millimeter för brett. Mot väggens bas är approximationen tät för allt som
    står längs väggen — och ett skåp som verkligen står snett mot väggen är i
    praktiken felskannat, inte snett.
-3. **Krockfärgen sitter på överlappslådan, inte på produktmeshen.** Att färga
+4. **Krockfärgen sitter på överlappslådan, inte på produktmeshen.** Att färga
    just den del av meshen som skär in kräver en `CustomMaterial` med en Metal
    surface shader som klipper mot krockplanet. `PulseComponent`/`PulseSystem`
    kan behållas oförändrade — bara materialbytet i `PulseSystem.update` skrivs om.
-4. **Lådor i stället för USDZ.** Produktkroppen är en grå låda i PIM-boxens
+5. **Lådor i stället för USDZ.** Produktkroppen är en grå låda i PIM-boxens
    mått. Riktiga modeller hängs in via `Product.modelAssetName` — men måtten
    måste fortsätta komma från PIM, aldrig från `visualBounds` på USDZ:en.
-5. **Scenen ligger i origo.** `ScannedNiche.worldFromNiche` finns och är testad,
+6. **Scenen ligger i origo.** `ScannedNiche.worldFromNiche` finns och är testad,
    men scenlagret använder den inte förrän kameran byts till `.worldTracking`.
 
 ## Nästa steg
@@ -210,10 +240,11 @@ mellan skåp som står an mot samma vägg och returnerar `Niche` + `[Obstacle]` 
 `worldFromNiche`. `source: .roomPlan` sätts, så mätosäkerheten följer med in i
 UI:t. **Ingen rad i `Engine/` ändrades** — hela poängen med `NicheSource`.
 
-Skanningsflödet finns också: knappen uppe till höger öppnar `RoomScanView`,
-som kör RoomPlans egen `RoomCaptureView`, listar de nischer som hittades och
-låter användaren peka ut rätt. Vald nisch går in i `model.apply(source:)`, och
-scenen byter då till passthrough med nischen ankrad på `worldFromNiche`.
+Skanningsflödet finns och sparar rummet: `RoomScanView` kör RoomPlans egen
+`RoomCaptureView`, `RoomStore` skriver mesh + `CapturedRoom` till disk, och
+`RoomViewerView` låter kunden gå runt i rummet i 3D. Därifrån går vägen vidare
+till `ProductPlacementView`, som väljer nisch och lämnar över till
+kollisionsmotorn med nischen ankrad på `worldFromNiche`.
 
 Notera: på iOS heter kameraläget `.spatialTracking`, inte `.worldTracking` —
 det senare finns bara på visionOS. `NSCameraUsageDescription` sätts via

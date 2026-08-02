@@ -14,8 +14,14 @@ import RealityKit
 
 struct FitDemoView: View {
 
-    @State private var model = FitDemoModel()
+    @State private var model: FitDemoModel
     @State private var controller = FitSceneController()
+
+    /// Utan källa körs demot på mockad nisch, vilket fungerar i simulatorn.
+    init(source: (any NicheSource)? = nil) {
+        let model = source.map { FitDemoModel(source: $0) } ?? FitDemoModel()
+        _model = State(initialValue: model)
+    }
 
     // Kamerastyrning för den virtuella förhandsvisningen.
     @State private var yaw: Float = 0.35
@@ -24,20 +30,15 @@ struct FitDemoView: View {
     @State private var dragStart: SIMD2<Float>?
     @State private var distanceStart: Float?
 
-    @State private var showsScanner = false
-
     var body: some View {
         ZStack {
             sceneView
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 8) {
-                    FitBadgeView(fit: model.fit)
-                    scanButton
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+                FitBadgeView(fit: model.fit)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
 
                 Spacer(minLength: 0)
 
@@ -60,23 +61,6 @@ struct FitDemoView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: model.showsCollisionAlert)
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showsScanner) {
-            RoomScanView { scanned in
-                model.apply(source: scanned)
-            }
-        }
-    }
-
-    private var scanButton: some View {
-        Button {
-            showsScanner = true
-        } label: {
-            Image(systemName: "cube.transparent")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        }
-        .accessibilityLabel("Skanna rummet")
     }
 
     // MARK: - 3D
