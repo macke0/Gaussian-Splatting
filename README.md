@@ -55,16 +55,42 @@ Dra för att rotera, nyp för att zooma.
 4. **Lägg till produkt** (`ProductPlacementView`) — välj nisch, prova produkter
    mot den. Det är här kollisionsmotorn från steg 1 kopplas in.
 
-Ett sparat rum ligger som två filer under `Application Support/Rooms/`: en
-`.usdz` med mesh:en för visning, och en `.json` med `CapturedRoom` så att
-nischerna kan räknas om när mätlogiken förbättras — utan att kunden skannar om.
-Nischerna räknas därför om vid visning i stället för att cachas.
+Ett sparat rum ligger i en egen mapp under `Application Support/Rooms/<id>/`:
+`room.usdz` med mesh:en, `room.json` med `CapturedRoom` så att nischerna kan
+räknas om när mätlogiken förbättras — utan att kunden skannar om — samt
+`keyframes.json` och fotona som målar rummet. Nischerna räknas därför om vid
+visning i stället för att cachas.
 
-**Mesh:en saknar textur.** RoomPlan levererar geometri, inte färg. Rummet får
-därför ett gråtonat material med tvåsidig rendering (annars försvinner väggarna
-när kameran hamnar innanför dem) och två riktade ljus, så att formen framträder
-via skuggning. Riktig färg kräver att ARKits kamerabilder projiceras på mesh:en
-— det är ett eget steg, inte en inställning.
+### Rummet målas med dina egna foton
+
+RoomPlan levererar geometri, inte färg. Färgen kommer i stället från kameran.
+
+Under skanningen exponerar `RoomCaptureSession` sin `arSession`. `KeyframeRecorder`
+pollar den och sparar upp till 40 **keyframes** — foto, kamerans placering,
+brännvidd och LiDAR-djupkartan. En bildruta blir en keyframe först efter 30 cm
+eller 20° förflyttning, annars fylls disken med samma vägg fyrtio gånger.
+
+`RoomTexturizer` målar sedan mesh:en. **Ingen texturatlas byggs.** I stället
+grupperas trianglarna efter vilken bild som såg dem bäst, och varje grupp blir
+en egen del med den bilden som textur. Det ger full fotoupplösning utan att
+packa om pixlar, och kostar en ritning per keyframe.
+
+`ViewSelection` avgör vilken bild som vinner. Tre krav, alla nödvändiga:
+
+1. **Alla tre hörnen syns i bilden.** Räcker bilden inte till hela triangeln
+   sträcks texturen över kanten och rummet blir randigt.
+2. **Ytan är vänd mot kameran** (`cos ≥ 0.2`). En vägg fotograferad snett
+   bakifrån ger utsmetade pixlar.
+3. **Ytan låg faktiskt främst.** LiDAR-djupet i keyframen jämförs med
+   triangelns avstånd, med 12 cm marginal för brus. Utan det testet målas
+   väggen bakom en spis rakt ut över spisen.
+
+Bland kandidaterna vinner `facing / distance` — rakt på och nära.
+
+Materialet är `UnlitMaterial` med flit: ljuset ligger redan i fotot. Med PBR och
+scenens lampor blir rummet dubbelbelyst. Den grå mesh:en finns kvar som
+växelläge i verktygsfältet, eftersom den visar var geometrin har hål — det
+döljer fotona.
 
 ## Arkitektur
 
@@ -76,6 +102,7 @@ SpatialFit/
 │   ├── Product.swift        PIM-bounding box + demokatalog.
 │   ├── RoomElement.swift    Skannat rum som orienterade lådor — utan RoomPlan.
 │   ├── SavedRoom.swift      Metadata om ett sparat rum. Bara Foundation.
+│   ├── Keyframe.swift       Foto med känd pose. Projektion + djupuppslag.
 │   └── Niche.swift          Niche, MeasurementSource, NicheSource-protokollet,
 │                            MockKitchenNiche.
 ├── Engine/
@@ -87,8 +114,10 @@ SpatialFit/
 │   ├── NicheMeasurer.swift  Punktmoln + grovt utgångsläge → NicheMeasurement.
 │   └── NicheFinder.swift    [RoomElement] → ScannedNiche i nischens egen bas.
 ├── ARKit/
-│   └── DepthPointCloud.swift  ARFrame → [DepthSample]. Enda stället som rör
-│                            ARKits djupkarta.
+│   ├── DepthPointCloud.swift  ARFrame → [DepthSample].
+│   └── KeyframeRecorder.swift  Foto + pose + djup, sparat under skanningen.
+├── Texturing/
+│   └── ViewSelection.swift  Vilken bild målar vilken triangel. Ren simd.
 ├── RoomPlan/
 │   ├── CapturedRoomReader.swift  CapturedRoom → [RoomElement] +
 │   │                        RoomPlanNicheSource.
@@ -98,6 +127,7 @@ SpatialFit/
 │   ├── PulseSystem.swift    ECS-system för pulserande varningsmaterial.
 │   ├── EntityFactory.swift  lådor, trådramar, måttetiketter.
 │   ├── RoomSceneController.swift  Orbitrigg för att gå runt i ett skannat rum.
+│   ├── RoomTexturizer.swift  Mesh + keyframes → fotograferat rum.
 │   └── FitSceneController.swift  FitResult → entiteter. Enda filen som känner
 │                            till både affärslogik och RealityKit.
 ├── ViewModel/FitDemoModel.swift
@@ -210,9 +240,10 @@ larma mot golvet den står på.
 
 ## Kända begränsningar i prototypen
 
-1. **Rummet är gråt.** Mesh:en har rätt form men ingen färg — RoomPlan
-   exporterar geometri, inte textur. Nästa steg mot "som en video" är att
-   projicera ARKits kamerabilder på mesh:en.
+1. **Textureringen är okörd mot riktig data.** Projektionen och vy-valet är
+   testade mot en påhittad kamerarigg, men hela kedjan har aldrig sett en
+   verklig skanning. Skarvarna mellan keyframes får troligen synliga
+   ljusskillnader, eftersom ingen färgutjämning görs mellan bilderna.
 2. **Nischprecisionen är oprövad på riktigt.** `NicheFinder` och
    `CapturedRoomReader` är testade mot syntetisk data. Först mot en tumstock
    visar det sig om RoomPlans skåpsdimensioner räcker för millimetersnack,
@@ -268,6 +299,12 @@ väggnormalen mot z-fighting, och UV-repeat = väggmått / plattmått så att
 `SurfaceReplacement`-modul bredvid `RealityKit/` och rör inte kollisionsmotorn.
 
 ## Tester
+
+`TexturingTests` täcker den matematik som avgör om rummet blir fotoidentiskt
+eller utsmetat: att projektionen behåller höger/upp mot ARKits konvention, att
+punkter bakom kameran och utanför bildkanten faller bort, att den närmaste
+kameran vinner, att en yta sedd från kanten väljs bort, och att djuptestet
+kastar bort skymda ytor men tolererar 12 cm LiDAR-brus.
 
 `SpatialFitTests/CollisionEngineTests.swift` täcker zongränserna,
 installationsmarginal, mätosäkerhet, krockgeometrin (2 träffar × 150 mm) och

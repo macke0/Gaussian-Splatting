@@ -76,7 +76,7 @@ struct RoomScanView: View {
     }
 
     private var scanningHint: some View {
-        Text("Gå långsamt runt rummet och håll väggar, golv och möbler i bild.")
+        Text("Gå långsamt runt rummet. Kameran fotograferar samtidigt, så håll väggar och möbler väl belysta i bild.")
             .font(.footnote)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 14)
@@ -96,6 +96,7 @@ struct RoomScanView: View {
                 LabeledContent("Väggar", value: "\(captured.walls.count)")
                 LabeledContent("Möbler och vitvaror", value: "\(captured.objects.count)")
                 LabeledContent("Nischer", value: "\(niches.count)")
+                LabeledContent("Foton att måla med", value: "\(scan.keyframes.count)")
             }
 
             if let saveError {
@@ -114,7 +115,10 @@ struct RoomScanView: View {
 
     private func save(_ captured: CapturedRoom) {
         do {
-            let saved = try store.save(captured, name: name.trimmingCharacters(in: .whitespaces))
+            let saved = try store.save(captured,
+                                       name: name.trimmingCharacters(in: .whitespaces),
+                                       keyframes: scan.keyframes,
+                                       photoDirectory: scan.photoDirectory)
             onSaved(saved)
             dismiss()
         } catch {

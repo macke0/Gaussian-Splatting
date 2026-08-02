@@ -5,6 +5,10 @@
 //  Titta på ett sparat rum i 3D. Kameran kretsar kring rummets mitt och nyp
 //  tar dig in i eller ut ur det.
 //
+//  Rummet visas fotograferat när skanningen hann spara bilder. Den grå mesh:en
+//  finns kvar som växelläge — den visar formen utan att fotona döljer var
+//  geometrin faktiskt har hål.
+//
 
 import SwiftUI
 import RealityKit
@@ -21,15 +25,26 @@ struct RoomViewerView: View {
     @State private var dragStart: SIMD2<Float>?
     @State private var distanceStart: Float?
 
-    @State private var loadFailed = false
-    @State private var isLoading = true
+    @State private var plain: Entity?
+    @State private var textured: Entity?
+    @State private var showsPhotos = true
+    @State private var status: Status = .loading
     @State private var showsProducts = false
+
+    private enum Status: Equatable {
+        case loading
+        case texturing
+        case ready
+        /// Geometrin gick att visa men fotona inte att måla med.
+        case plainOnly(String)
+        case failed
+    }
 
     var body: some View {
         ZStack {
             sceneBackground.ignoresSafeArea()
 
-            if loadFailed {
+            if status == .failed {
                 ContentUnavailableView {
                     Label("Kunde inte öppna rummet", systemImage: "cube.transparent")
                 } description: {
@@ -42,14 +57,23 @@ struct RoomViewerView: View {
                     .simultaneousGesture(zoomGesture)
             }
 
-            if isLoading {
-                ProgressView().controlSize(.large)
+            if status == .loading || status == .texturing {
+                progress
             }
         }
         .overlay(alignment: .bottom) { hint }
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if textured != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(showsPhotos ? "Foto" : "Form",
+                           systemImage: showsPhotos ? "photo" : "square.grid.3x3") {
+                        showsPhotos.toggle()
+                        showVariant()
+                    }
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Lägg till produkt", systemImage: "shippingbox") {
                     showsProducts = true
@@ -68,37 +92,92 @@ struct RoomViewerView: View {
             content.camera = .virtual
             content.add(controller.root)
             applyCamera()
-
-            do {
-                let loaded = try await Entity(contentsOf: store.modelURL(for: room))
-                controller.install(loaded)
-                distance = controller.defaultDistance
-                applyCamera()
-            } catch {
-                loadFailed = true
-            }
-            isLoading = false
+            await load()
 
         } update: { _ in
             applyCamera()
         }
     }
 
+    private var progress: some View {
+        VStack(spacing: 10) {
+            ProgressView().controlSize(.large)
+            if status == .texturing {
+                Text("Målar rummet med dina foton…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
     private var hint: some View {
-        Text(room.nicheCount == 0
-             ? "Inga nischer hittades i rummet."
-             : "Dra för att vrida · nyp för att gå in i rummet")
-            .font(.footnote)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
-            .padding(.bottom, 20)
+        Group {
+            switch status {
+            case .plainOnly(let reason):
+                Text(reason)
+            case .ready where room.nicheCount == 0:
+                Text("Inga nischer hittades i rummet.")
+            default:
+                Text("Dra för att vrida · nyp för att gå in i rummet")
+            }
+        }
+        .font(.footnote)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.horizontal, 24)
+        .padding(.bottom, 20)
     }
 
     private var sceneBackground: some View {
         LinearGradient(colors: [Color(red: 0.10, green: 0.11, blue: 0.14),
                                 Color(red: 0.03, green: 0.03, blue: 0.05)],
                        startPoint: .top, endPoint: .bottom)
+    }
+
+    // MARK: - Laddning
+
+    /// Geometrin visas direkt. Textureringen tar sekunder och får komma efter,
+    /// så att rummet syns medan den räknas.
+    private func load() async {
+        guard plain == nil else { return }
+
+        guard let loaded = try? await Entity(contentsOf: store.modelURL(for: room)) else {
+            status = .failed
+            return
+        }
+        plain = loaded
+        controller.install(loaded)
+        distance = controller.defaultDistance
+        applyCamera()
+        status = .ready
+
+        let keyframes = store.keyframes(for: room)
+        guard !keyframes.isEmpty else {
+            status = .plainOnly("Rummet saknar foton. Skanna om för att måla det.")
+            return
+        }
+
+        status = .texturing
+        do {
+            let painted = try await RoomTexturizer.texturize(source: loaded,
+                                                            keyframes: keyframes,
+                                                            directory: store.directory(for: room))
+            textured = painted
+            showVariant()
+            status = .ready
+        } catch {
+            status = .plainOnly(error.localizedDescription)
+        }
+    }
+
+    private func showVariant() {
+        guard let variant = showsPhotos ? textured ?? plain : plain else { return }
+        controller.install(variant, lit: variant === plain)
+        applyCamera()
     }
 
     // MARK: - Gester

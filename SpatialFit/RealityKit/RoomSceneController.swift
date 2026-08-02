@@ -40,9 +40,13 @@ final class RoomSceneController {
     }
 
     /// Byter ut rummet i scenen och centrerar riggen på det.
-    func install(_ loaded: Entity) {
+    ///
+    /// - Parameter lit: sant för den grå mesh:en, som behöver scenens ljus för
+    ///   att formen ska synas. Falskt för den fotograferade, där ljuset redan
+    ///   ligger i bilden — den skulle bara bli dubbelbelyst.
+    func install(_ loaded: Entity, lit: Bool = true) {
         model?.removeFromParent()
-        applySurfaceMaterial(to: loaded)
+        if lit { applySurfaceMaterial(to: loaded) }
         root.addChild(loaded)
         model = loaded
 

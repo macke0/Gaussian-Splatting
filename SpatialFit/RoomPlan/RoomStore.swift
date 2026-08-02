@@ -2,15 +2,17 @@
 //  RoomStore.swift
 //  SpatialFit
 //
-//  Sparade rum på disk. Per rum skrivs två filer:
+//  Sparade rum på disk. Varje rum får en egen mapp:
 //
-//    <id>.usdz  – RoomPlans mesh-export. Den rekonstruerade ytan, inte de
-//                 parametriska boxarna, så att rummet går att titta på i 3D.
-//    <id>.json  – `CapturedRoom` kodad. Boxarna finns kvar här, vilket gör att
-//                 nischerna kan räknas om senare utan att kunden skannar igen.
+//    <id>/room.usdz       RoomPlans mesh-export. Den rekonstruerade ytan, inte
+//                         de parametriska boxarna.
+//    <id>/room.json       `CapturedRoom` kodad. Boxarna finns kvar här, så att
+//                         nischerna kan räknas om utan att kunden skannar om.
+//    <id>/keyframes.json  Kamerornas placering.
+//    <id>/kfN.jpg/.depth  Fotona och LiDAR-djupet som målar rummet.
 //
-//  Indexet (`index.json`) håller bara metadata. Det gör listan snabb att visa
-//  utan att avkoda rumsgeometrin.
+//  Indexet (`index.json`) håller bara metadata, så listan går att visa utan
+//  att avkoda rumsgeometrin.
 //
 
 import Foundation
@@ -43,8 +45,19 @@ final class RoomStore {
         rooms = stored.sorted { $0.scannedAt > $1.scannedAt }
     }
 
+    func directory(for room: SavedRoom) -> URL {
+        directory.appending(path: room.directoryName)
+    }
+
     func modelURL(for room: SavedRoom) -> URL {
-        directory.appending(path: room.modelFilename)
+        directory(for: room).appending(path: SavedRoom.modelFilename)
+    }
+
+    func keyframes(for room: SavedRoom) -> [Keyframe] {
+        let url = directory(for: room).appending(path: SavedRoom.keyframeFilename)
+        guard let data = try? Data(contentsOf: url),
+              let stored = try? JSONDecoder().decode([Keyframe].self, from: data) else { return [] }
+        return stored
     }
 
     /// Räknar om nischerna ur den sparade skanningen. Görs vid visning i
@@ -56,28 +69,58 @@ final class RoomStore {
     }
 
     private func capturedRoom(for room: SavedRoom) -> CapturedRoom? {
-        let url = directory.appending(path: room.captureFilename)
+        let url = directory(for: room).appending(path: SavedRoom.captureFilename)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(CapturedRoom.self, from: data)
     }
 
     // MARK: - Skriva
 
-    /// Skriver USDZ:en först. Rummet hamnar i indexet bara om båda filerna gick
-    /// att skriva, så listan aldrig visar ett rum som inte går att öppna.
+    /// Fotona ligger i en temporär mapp under skanningen, eftersom rummets id
+    /// inte finns förrän här. De flyttas in, så inget kopieras i onödan.
     @discardableResult
-    func save(_ captured: CapturedRoom, name: String) throws -> SavedRoom {
+    func save(_ captured: CapturedRoom,
+              name: String,
+              keyframes: [Keyframe] = [],
+              photoDirectory: URL? = nil) throws -> SavedRoom {
         let niches = NicheFinder.niches(in: CapturedRoomReader.elements(from: captured))
-        let room = SavedRoom(name: name, nicheCount: niches.count)
+        let room = SavedRoom(name: name,
+                             nicheCount: niches.count,
+                             hasPhotos: !keyframes.isEmpty)
+        let folder = directory(for: room)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
 
-        try captured.export(to: directory.appending(path: room.modelFilename),
-                            exportOptions: .mesh)
-        try JSONEncoder().encode(captured)
-            .write(to: directory.appending(path: room.captureFilename))
+        do {
+            try captured.export(to: folder.appending(path: SavedRoom.modelFilename),
+                                exportOptions: .mesh)
+            try JSONEncoder().encode(captured)
+                .write(to: folder.appending(path: SavedRoom.captureFilename))
+
+            if !keyframes.isEmpty, let photoDirectory {
+                try movePhotos(keyframes, from: photoDirectory, to: folder)
+                try JSONEncoder().encode(keyframes)
+                    .write(to: folder.appending(path: SavedRoom.keyframeFilename))
+            }
+        } catch {
+            // Halvskrivna rum ska inte hamna i listan.
+            try? fileManager.removeItem(at: folder)
+            throw error
+        }
 
         rooms.insert(room, at: 0)
         try writeIndex()
         return room
+    }
+
+    private func movePhotos(_ keyframes: [Keyframe], from source: URL, to destination: URL) throws {
+        for keyframe in keyframes {
+            for filename in [keyframe.imageFilename, keyframe.depthFilename] {
+                let origin = source.appending(path: filename)
+                guard fileManager.fileExists(atPath: origin.path) else { continue }
+                try fileManager.moveItem(at: origin, to: destination.appending(path: filename))
+            }
+        }
+        try? fileManager.removeItem(at: source)
     }
 
     func rename(_ room: SavedRoom, to name: String) {
@@ -89,8 +132,7 @@ final class RoomStore {
 
     func delete(_ room: SavedRoom) {
         rooms.removeAll { $0.id == room.id }
-        try? fileManager.removeItem(at: directory.appending(path: room.modelFilename))
-        try? fileManager.removeItem(at: directory.appending(path: room.captureFilename))
+        try? fileManager.removeItem(at: directory(for: room))
         try? writeIndex()
     }
 

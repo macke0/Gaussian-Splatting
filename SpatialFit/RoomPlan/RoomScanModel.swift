@@ -32,7 +32,19 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     /// Vyn som ritar skanningen. `nil` när enheten saknar LiDAR.
     let captureView: RoomCaptureView?
 
+    /// Fotona som ska måla rummet. De ligger i en temporär mapp tills rummet
+    /// sparas och får ett id att lägga dem under.
+    let photoDirectory: URL
+    @ObservationIgnored private let recorder: KeyframeRecorder
+
+    var keyframes: [Keyframe] { recorder.keyframes }
+
     override init() {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "scan-\(UUID().uuidString)")
+        photoDirectory = folder
+        recorder = KeyframeRecorder(directory: folder)
+
         if RoomCaptureSession.isSupported {
             captureView = RoomCaptureView(frame: .zero)
             phase = .scanning
@@ -53,6 +65,9 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         guard let captureView else { return }
         phase = .scanning
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
+        // RoomPlan exponerar sin ARSession. Fotona hämtas därifrån utan att
+        // sessionens egen delegat tas över.
+        recorder.start(session: captureView.captureSession.arSession)
     }
 
     /// Avsluta skanningen och låt RoomPlan efterbehandla. Resultatet kommer i
@@ -60,12 +75,15 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     func finish() {
         guard case .scanning = phase, let captureView else { return }
         phase = .processing
+        recorder.stop()
         captureView.captureSession.stop()
     }
 
     /// Avbryt utan att efterbehandla.
     func cancel() {
+        recorder.stop()
         captureView?.captureSession.stop(pauseARSession: true)
+        try? FileManager.default.removeItem(at: photoDirectory)
     }
 
     // MARK: - RoomCaptureViewDelegate

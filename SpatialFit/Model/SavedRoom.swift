@@ -21,16 +21,27 @@ struct SavedRoom: Identifiable, Codable, Sendable, Hashable {
     /// kunden ser om skanningen gav något innan hen öppnar rummet.
     var nicheCount: Int
 
-    init(id: UUID = UUID(), name: String, scannedAt: Date = Date(), nicheCount: Int) {
+    init(id: UUID = UUID(),
+         name: String,
+         scannedAt: Date = Date(),
+         nicheCount: Int,
+         hasPhotos: Bool = false) {
         self.id = id
         self.name = name
         self.scannedAt = scannedAt
         self.nicheCount = nicheCount
+        self.hasPhotos = hasPhotos
     }
 
-    /// Filnamn härleds ur id:t, så indexet aldrig kan peka fel.
-    var modelFilename: String { "\(id.uuidString).usdz" }
-    var captureFilename: String { "\(id.uuidString).json" }
+    /// Om skanningen hann spara foton att måla rummet med.
+    var hasPhotos: Bool = false
+
+    /// Allt om ett rum ligger i en egen mapp, döpt efter id:t. Då kan rummet
+    /// tas bort med en enda operation och filnamnen kan vara konstanta.
+    var directoryName: String { id.uuidString }
+    static let modelFilename = "room.usdz"
+    static let captureFilename = "room.json"
+    static let keyframeFilename = "keyframes.json"
 
     var scannedAtDescription: String {
         scannedAt.formatted(date: .abbreviated, time: .shortened)
