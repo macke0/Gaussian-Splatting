@@ -97,6 +97,12 @@ struct RoomScanView: View {
                 LabeledContent("Möbler och vitvaror", value: "\(captured.objects.count)")
                 LabeledContent("Nischer", value: "\(niches.count)")
                 LabeledContent("Foton att måla med", value: "\(scan.keyframes.count)")
+                // Utan trianglar blir rummet RoomPlans lådor. Det syns bäst här,
+                // medan kunden fortfarande står kvar och kan skanna om.
+                LabeledContent("Uppmätt yta",
+                               value: scan.sceneMesh.isEmpty
+                                   ? "saknas — rummet visas som lådor"
+                                   : "\(scan.sceneMesh.triangleCount) trianglar")
             }
 
             if let saveError {

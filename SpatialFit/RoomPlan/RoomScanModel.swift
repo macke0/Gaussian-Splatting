@@ -13,6 +13,7 @@
 import Foundation
 import Observation
 import RoomPlan
+import ARKit
 
 @MainActor
 @Observable
@@ -37,6 +38,11 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     let photoDirectory: URL
     @ObservationIgnored private let recorder: KeyframeRecorder
 
+    /// Sessionen ägs av oss, inte av RoomPlan. Det är enda sättet att slå på
+    /// scenrekonstruktion — RoomPlans egen konfiguration har den inte, och utan
+    /// den finns inga `ARMeshAnchor` att bygga rummets verkliga form ur.
+    @ObservationIgnored private let arSession = ARSession()
+
     var keyframes: [Keyframe] { recorder.keyframes }
 
     /// Den täta ytan ARKit rekonstruerade. Fylls när skanningen avslutas —
@@ -50,7 +56,7 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         recorder = KeyframeRecorder(directory: folder)
 
         if RoomCaptureSession.isSupported {
-            captureView = RoomCaptureView(frame: .zero)
+            captureView = RoomCaptureView(frame: .zero, arSession: arSession)
             phase = .scanning
         } else {
             captureView = nil
@@ -68,10 +74,25 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     func start() {
         guard let captureView else { return }
         phase = .scanning
+        arSession.run(Self.configuration())
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
-        // RoomPlan exponerar sin ARSession. Fotona hämtas därifrån utan att
-        // sessionens egen delegat tas över.
-        recorder.start(session: captureView.captureSession.arSession)
+        // Fotona hämtas ur samma session, utan att dess delegat tas över.
+        recorder.start(session: arSession)
+    }
+
+    /// Det RoomPlan behöver — djup och släta djupkartor — plus scenrekonstruktion.
+    /// Utan `.mesh` blir rummet RoomPlans lådor, för då finns ingen tät yta.
+    private static func configuration() -> ARWorldTrackingConfiguration {
+        let configuration = ARWorldTrackingConfiguration()
+        configuration.frameSemantics.insert(.sceneDepth)
+        configuration.frameSemantics.insert(.smoothedSceneDepth)
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+            configuration.sceneReconstruction = .meshWithClassification
+        } else if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+            configuration.sceneReconstruction = .mesh
+        }
+        configuration.planeDetection = [.horizontal, .vertical]
+        return configuration
     }
 
     /// Avsluta skanningen och låt RoomPlan efterbehandla. Resultatet kommer i
@@ -81,7 +102,7 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         phase = .processing
         recorder.stop()
         // Måste läsas innan sessionen stoppas — sedan är anchors borta.
-        sceneMesh = SceneMeshRecorder.snapshot(of: captureView.captureSession.arSession)
+        sceneMesh = SceneMeshRecorder.snapshot(of: arSession)
         captureView.captureSession.stop()
     }
 
