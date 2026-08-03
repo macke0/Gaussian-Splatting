@@ -48,11 +48,20 @@ class BakedRoom:
     texture: np.ndarray
     seen_fraction: float
     triangle_count: int
+    #: Splatten som målade texturen, om det var den som gjorde det. Följer med
+    #: ut för att telefonen ska kunna rendera den direkt: den texturerade meshen
+    #: är mjukare än splatten, hur bra splatten än blev.
+    splat: object | None = None
 
     def write(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "baked.mesh").write_bytes(self.mesh.encode())
         Image.fromarray(self.texture).save(directory / "baked.png")
+
+        if self.splat is not None:
+            from .splat import write_ply
+
+            write_ply(self.splat, directory / "splat.ply")
 
 
 def bake_room(directory: Path,
@@ -81,17 +90,19 @@ def bake_room(directory: Path,
     unwrapped = atlas_module.rasterize(positions, normals, uvs, faces, atlas_size)
     log.info("atlasen täcker %.1f %% av ytan", unwrapped.coverage * 100)
 
-    result = bake(unwrapped, _painting_views(bundle, color_source))
+    views, model = _painting_views(bundle, color_source)
+    result = bake(unwrapped, views)
     log.info("%.1f %% av texlarna såg minst ett foto", result.seen_fraction * 100)
 
     return BakedRoom(mesh=TexturedMesh(positions=positions, normals=normals,
                                        uvs=uvs, indices=faces),
                      texture=result.texture,
                      seen_fraction=result.seen_fraction,
-                     triangle_count=len(faces))
+                     triangle_count=len(faces),
+                     splat=model)
 
 
-def _painting_views(bundle: "ScanBundle", color_source: str) -> list:
+def _painting_views(bundle: "ScanBundle", color_source: str) -> tuple[list, object | None]:
     """Fotona att måla med — antingen kamerans egna eller splattens renderade.
 
     Att låta splatten lämna ifrån sig ``Keyframe`` i stället för färg direkt gör
@@ -99,13 +110,13 @@ def _painting_views(bundle: "ScanBundle", color_source: str) -> list:
     utfyllnad fungerar likadant på en renderad vy som på ett foto.
     """
     if color_source == "blend":
-        return bundle.keyframes
+        return bundle.keyframes, None
 
     from .splat import synthetic_keyframes, train
 
     model = train(bundle)
     log.info("tränade %d gaussare", len(model))
-    return synthetic_keyframes(model, bundle)
+    return synthetic_keyframes(model, bundle), model
 
 
 def _cleaned(positions: np.ndarray, faces: np.ndarray,

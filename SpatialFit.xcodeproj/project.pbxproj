@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		7564D5993020EE530071016E /* MetalSplatter in Frameworks */ = {isa = PBXBuildFile; productRef = AAAAAAAAAAAAAAAAAAAA0031 /* MetalSplatter */; };
+		7564D59A3020EE530071016E /* SplatIO in Frameworks */ = {isa = PBXBuildFile; productRef = AAAAAAAAAAAAAAAAAAAA0032 /* SplatIO */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		AAAAAAAAAAAAAAAAAAAA0026 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -39,6 +44,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7564D59A3020EE530071016E /* SplatIO in Frameworks */,
+				7564D5993020EE530071016E /* MetalSplatter in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -90,6 +97,8 @@
 			);
 			name = SpatialFit;
 			packageProductDependencies = (
+				AAAAAAAAAAAAAAAAAAAA0031 /* MetalSplatter */,
+				AAAAAAAAAAAAAAAAAAAA0032 /* SplatIO */,
 			);
 			productName = SpatialFit;
 			productReference = AAAAAAAAAAAAAAAAAAAA0006 /* SpatialFit.app */;
@@ -146,6 +155,9 @@
 			);
 			mainGroup = AAAAAAAAAAAAAAAAAAAA0002;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AAAAAAAAAAAAAAAAAAAA0030 /* XCRemoteSwiftPackageReference "MetalSplatter" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AAAAAAAAAAAAAAAAAAAA0003 /* Products */;
 			projectDirPath = "";
@@ -402,6 +414,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AAAAAAAAAAAAAAAAAAAA0030 /* XCRemoteSwiftPackageReference "MetalSplatter" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scier/MetalSplatter";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AAAAAAAAAAAAAAAAAAAA0031 /* MetalSplatter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AAAAAAAAAAAAAAAAAAAA0030 /* XCRemoteSwiftPackageReference "MetalSplatter" */;
+			productName = MetalSplatter;
+		};
+		AAAAAAAAAAAAAAAAAAAA0032 /* SplatIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AAAAAAAAAAAAAAAAAAAA0030 /* XCRemoteSwiftPackageReference "MetalSplatter" */;
+			productName = SplatIO;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AAAAAAAAAAAAAAAAAAAA0001 /* Project object */;
 }

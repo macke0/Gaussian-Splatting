@@ -14,7 +14,8 @@ import trimesh
 from spatialfit_server.bundle import Keyframe, ScanBundle
 from spatialfit_server.mesh import SceneMesh
 from spatialfit_server.pipeline import bake_room
-from spatialfit_server.splat import _between, _poses, _seed
+from spatialfit_server.splat import (SplatModel, _between, _poses, _seed, _trimmed,
+                                     write_ply)
 
 
 def keyframe(identifier: int, angle: float) -> Keyframe:
@@ -89,6 +90,22 @@ def test_utan_extra_vyer_blir_det_bara_fotona():
     assert all(is_exact for _, _, is_exact in poses)
 
 
+def test_justerade_kameror_gar_fore_arkits_egna():
+    scan = bundle(frames=3)
+    # Splatten är skarp bara sett från de poser den tränades i. Renderas den ur
+    # ARKits ursprungliga står bilden några centimeter fel mot ytan, och det
+    # syns varken i förlusten eller i en atlas.
+    refined = np.stack([frame.camera_from_world for frame in scan.keyframes])
+    refined[:, 0, 3] += 0.05
+
+    poses = _poses(scan, extra_views=1, refined=refined)
+
+    assert np.allclose(poses[0][1], refined[0])
+    assert np.allclose(poses[2][1], refined[1])
+    # Även de inskjutna vyerna ska ligga mellan de justerade, inte de gamla.
+    assert np.allclose(poses[1][1], _between(refined[0], refined[1], 0.5))
+
+
 def test_startpunkterna_ligger_pa_ytan_och_far_skala_av_grannen():
     scan = bundle()
 
@@ -106,6 +123,40 @@ def test_startpunkterna_glesas_till_taket():
     means, scales = _seed(scan, max_splats=4)
 
     assert len(means) == len(scales) == 4
+
+
+def test_bortflugna_och_osynliga_gaussare_kastas():
+    scan = bundle()
+    # Lådan är 2×2×2 m kring origo, marginalen 1 m. Fyra gaussare: en i rummet,
+    # en långt utanför, en genomskinlig, en precis på gränsen.
+    logit = lambda alpha: float(np.log(alpha / (1 - alpha)))  # noqa: E731
+    model = SplatModel(means=np.array([[0.0, 0.0, 0.0], [900.0, 0.0, 0.0],
+                                       [0.1, 0.1, 0.1], [2.0, 0.0, 0.0]], np.float32),
+                       quats=np.zeros((4, 4), np.float32),
+                       scales=np.zeros((4, 3), np.float32),
+                       opacities=np.array([logit(0.9), logit(0.9),
+                                           logit(0.01), logit(0.9)], np.float32),
+                       colors=np.zeros((4, 3), np.float32))
+
+    kept = _trimmed(model, scan)
+
+    assert len(kept) == 2
+    assert np.allclose(kept.means[:, 0], [0.0, 2.0])
+
+
+def test_hela_modellen_skrivs_utan_gallring(tmp_path):
+    # Telefonens tak sätts under träningen, inte här: exporten som gallrade
+    # efteråt mätte volym och behöll därför de rundaste, alltså de suddigaste.
+    model = SplatModel(means=np.zeros((10, 3), np.float32),
+                       quats=np.zeros((10, 4), np.float32),
+                       scales=np.zeros((10, 3), np.float32),
+                       opacities=np.zeros(10, np.float32),
+                       colors=np.zeros((10, 3), np.float32))
+
+    write_ply(model, tmp_path / "splat.ply")
+
+    header = (tmp_path / "splat.ply").read_bytes()[:200].decode("ascii", "ignore")
+    assert "element vertex 10" in header
 
 
 def test_okand_fargkalla_avvisas(tmp_path):

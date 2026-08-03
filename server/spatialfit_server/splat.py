@@ -15,12 +15,26 @@ Två val skiljer den här träningen från 3DGS som det brukar se ut:
 texturatlas kan ändå inte bära vy-beroende ljus, och med högre grad hade en
 spegling från ett enda håll bakats in i väggen som en fläck.
 
-**Ingen förtätning.** Vanlig 3DGS börjar med glesa SfM-punkter och måste klona
-sig fram till täckning. Vi börjar i LiDAR-ytans hörn — geometrin är redan känd
-och tät, vilket är hela poängen med att ha skannat rummet.
+**Förtätning trots tät start.** Vanlig 3DGS börjar med glesa SfM-punkter och
+måste klona sig fram till täckning. Vi börjar i LiDAR-ytans hörn — geometrin är
+redan känd och tät, vilket är hela poängen med att ha skannat rummet. Men en
+gaussare per LiDAR-hörn är ett tak på detaljnivån, och det taket ligger under
+fotots: 200 000 hörn mot 40 foton à 1536 px. Därför får gsplat dela och klona
+där bilden inte stämmer. Mätningen rörs inte — den kommer aldrig härifrån.
 
-Poserna är låsta. De kommer från ARKit och är samma poser som måtten vilar på;
-låter man dem glida får man en vackrare rendering av fel rum.
+**Poserna får glida, men bara för bildens skull.** De kommer från ARKit och
+duger till att mäta med. Till att *måla* med gör de det inte: reprojektionsfelet
+är 2–3 cm, vilket vid 1536 px är 15–20 pixlars glidning mellan två foton av samma
+vägg. Tränar man en splat mot foton som är oense på den nivån blir resultatet ett
+medelvärde av dem — suddigt, hur många gaussare och steg man än lägger på.
+``refine_poses`` låter därför varje kamera justera sig några millimeter. Den
+justeringen stannar i träningen och skrivs aldrig tillbaka till skanningen; det
+som mäts kommer fortfarande från ARKits egna poser.
+
+**Förlusten är inte bara L1.** Ett pixelavstånd är nöjt med ett medelvärde: två
+foton som är oense om var väggen ligger får sin lägsta L1 av något suddigt
+mittemellan. Därför väger ``SSIM_WEIGHT`` in strukturlikhet, som mäter lokal
+kontrast och samvariation och alltså ser skillnad på skarpt och utsmetat.
 
 **Djupet kommer inte från splatten.** Det låg nära till hands att låta gsplat
 rendera djup och skicka med det till skymningstestet, men splattens djup är ett
@@ -43,9 +57,20 @@ log = logging.getLogger(__name__)
 
 #: Antal gaussare att starta med. Fler ger skarpare bild men långsammare steg.
 DEFAULT_MAX_SPLATS = 300_000
-DEFAULT_ITERATIONS = 3_000
+#: 3 000 räckte inte. Uppmätt på ett riktigt rum: skillnaden mot fotot går från
+#: 24 till 8,7 grånivåer mellan 7 000 och 30 000 steg, och förtätningen slutar
+#: ändå av sig själv vid halva vägen.
+DEFAULT_ITERATIONS = 30_000
 #: Hur många extra vyer som vävs in mellan de riktiga fotona.
 DEFAULT_EXTRA_VIEWS = 2
+#: Så många gaussare telefonen får. Formatet är 68 byte styck, så 400 000 är
+#: ungefär 27 MB att ladda ner och lika mycket i GPU-minnet. Talet är också
+#: träningens tak — se ``train``.
+PHONE_SPLAT_BUDGET = 400_000
+
+#: Nollte sfäriska harmoniken. Splat-visare lagrar färgen som SH-koefficient och
+#: räknar tillbaka den som ``0.5 + SH_DC * f_dc``.
+SH_DC = 0.28209479177387814
 
 #: ARKit har Y uppåt och Z bakåt, gsplat vill ha Y nedåt och Z framåt.
 #: Samma teckenbyte som ``Keyframe.project`` gör inför ``intrinsics``.
@@ -61,15 +86,82 @@ class SplatModel:
     scales: np.ndarray  # (n, 3), log-skala
     opacities: np.ndarray  # (n,), logit
     colors: np.ndarray  # (n, 3), 0–1
+    #: Kamerorna som träningen landade på, om de fick justeras. Bara till för att
+    #: kunna rendera om splatten från samma håll — måtten använder dem aldrig.
+    poses: np.ndarray | None = None  # (kameror, 4, 4)
 
     def __len__(self) -> int:
         return len(self.means)
 
 
+LEARNING_RATES = {
+    "scales": 5e-3,
+    "quats": 1e-3,
+    "opacities": 5e-2,
+    "colors": 2.5e-2,
+}
+
+#: Takten för gaussarnas läge, skalad med rummets storlek som i 3DGS-artikeln.
+#: Här satt fem gånger lägre förr, för att inte "kasta bort den mätta
+#: geometrin". Det var fel resonemang: splatten mäter ingenting. En gaussare som
+#: inte får flytta sig till rätt plats växer i stället tills den täcker felet,
+#: och stora gaussare är precis vad ett utsmetat rum består av.
+MEANS_LEARNING_RATE = 1.6e-4
+
+#: Genomskinliga från början. Startar de nästan täckande blir de 200 000
+#: överlappande gaussarna en vägg av dimma: den främsta äter hela alfat och
+#: ytorna bakom får aldrig någon gradient att lära sig av.
+INITIAL_OPACITY = 0.1
+
+#: Kamerornas egen inlärningstakt. Låg med flit: felet vi rättar är centimeter,
+#: inte meter, och en lös kamera hittar hellre en vacker lögn än rummet.
+POSE_LEARNING_RATE = 1e-4
+
+#: Hur mycket av förlusten som är strukturlikhet i stället för pixelavstånd.
+#: Samma vikt som 3DGS-artikeln använder.
+SSIM_WEIGHT = 0.2
+
+#: MCMC-strategin håller antalet gaussare konstant genom att flytta de döda dit
+#: bilden är fel. Utan de här två straffen driver den mot många nästan
+#: genomskinliga och stora gaussare, eftersom en dimma sänker förlusten billigt.
+#: Vikterna är gsplats egna.
+OPACITY_PENALTY = 0.01
+SCALE_PENALTY = 0.01
+
+#: Svagare än så syns en gaussare inte ens som en aning. Nästan halva en
+#: MCMC-tränad splat hamnar där, eftersom straffet ovan trycker ned alla som
+#: inte behövs. Uppmätt på det riktiga rummet: att kasta dem nästan halverar
+#: filen och kostar 0,14 dB — och den renderade bilden blir marginellt SKARPARE.
+MINIMUM_OPACITY = 0.05
+
+#: Hur långt utanför skanningens egen låda en gaussare får ligga. MCMC:s brus
+#: slungar iväg ett par tusen stycken. De är osynliga men inte gratis: telefonen
+#: ställer kameran efter splattens utsträckning, och med dem kvar mätte rummet
+#: 1 343 meter i stället för 9.
+ROOM_MARGIN = 1.0
+
+
 def train(bundle: ScanBundle,
           iterations: int = DEFAULT_ITERATIONS,
-          max_splats: int = DEFAULT_MAX_SPLATS) -> SplatModel:
-    """Passar gaussare mot fotona. Kräver CUDA."""
+          max_splats: int = DEFAULT_MAX_SPLATS,
+          densify: bool = True,
+          refine_poses: bool = True,
+          budget: int = PHONE_SPLAT_BUDGET) -> SplatModel:
+    """Passar gaussare mot fotona. Kräver CUDA.
+
+    ``budget`` är telefonens tak, och det gäller redan här. Förr sköt träningen
+    fritt upp till några miljoner gaussare och exporten gallrade ner till taket
+    efteråt — men gallringen mätte opacitet gånger volym, alltså valde den de
+    STÖRSTA. En platt skiva som täcker en vägg skarpt har liten volym; en rund
+    klump som smetar har stor. Exporten kastade alltså systematiskt bort det
+    träningen lärt sig och behöll dimman. Uppmätt på det riktiga rummet: av den
+    exporterade miljonen var hälften närmast klot (mid/min 1,45 i median),
+    vilket är fel form för en yta.
+
+    Därför äger träningen taket i stället, genom gsplats MCMC-strategi: antalet
+    gaussare hålls konstant och de som slocknar flyttas dit bilden är fel. Det
+    som skickas till telefonen är då exakt det som optimerades.
+    """
     import torch
 
     device = _device()
@@ -80,54 +172,168 @@ def train(bundle: ScanBundle,
     means, scales = _seed(bundle, max_splats)
     log.info("startar från %d punkter på LiDAR-ytan", len(means))
 
-    parameters = {
-        "means": torch.tensor(means, device=device),
-        "scales": torch.tensor(np.log(scales), device=device),
-        "quats": torch.tensor(
-            np.tile([1.0, 0.0, 0.0, 0.0], (len(means), 1)).astype(np.float32), device=device),
-        "opacities": torch.full((len(means),), 2.0, device=device),
+    parameters = torch.nn.ParameterDict({
+        "means": torch.nn.Parameter(torch.tensor(means, device=device)),
+        "scales": torch.nn.Parameter(torch.tensor(np.log(scales), device=device)),
+        "quats": torch.nn.Parameter(torch.tensor(
+            np.tile([1.0, 0.0, 0.0, 0.0], (len(means), 1)).astype(np.float32), device=device)),
+        "opacities": torch.nn.Parameter(torch.full(
+            (len(means),), float(np.log(INITIAL_OPACITY / (1 - INITIAL_OPACITY))), device=device)),
         # Grått är en ärligare gissning än svart: förlusten drar det åt rätt
         # håll oavsett rummets ton.
-        "colors": torch.full((len(means), 3), 0.5, device=device),
-    }
-    for tensor in parameters.values():
-        tensor.requires_grad_(True)
+        "colors": torch.nn.Parameter(torch.full((len(means), 3), 0.5, device=device)),
+    })
+    # gsplats förtätningsstrategi flyttar rader i både parametrar och Adams
+    # tillstånd, och kan bara göra det när varje parameter har en egen
+    # optimerare. Därför en per namn i stället för en med fem grupper.
+    scene_scale = max(float(np.linalg.norm(means.max(axis=0) - means.min(axis=0)) / 2), 1e-3)
+    rates = dict(LEARNING_RATES, means=MEANS_LEARNING_RATE * scene_scale)
+    optimizers = {name: torch.optim.Adam([{"params": parameters[name], "lr": rate, "name": name}])
+                  for name, rate in rates.items()}
 
-    # Punkterna ligger redan rätt. Att låta dem vandra fritt vore att kasta bort
-    # den mätta geometrin, så de får bara justera sig långsamt.
-    optimizer = torch.optim.Adam([
-        {"params": [parameters["means"]], "lr": 1e-4},
-        {"params": [parameters["scales"]], "lr": 5e-3},
-        {"params": [parameters["quats"]], "lr": 1e-3},
-        {"params": [parameters["opacities"]], "lr": 5e-2},
-        {"params": [parameters["colors"]], "lr": 2.5e-2},
-    ])
+    # Takten för lägena trappas ned hundrafalt över träningen. Utan det fortsätter
+    # gaussarna att skaka i sista steget lika mycket som i första, och en yta som
+    # aldrig får stanna hinner aldrig bli skarp.
+    schedule = torch.optim.lr_scheduler.ExponentialLR(
+        optimizers["means"], gamma=0.01 ** (1.0 / max(iterations, 1)))
+
+    strategy, state = _densification(budget) if densify else (None, None)
 
     views = [_view(frame, device) for frame in frames]
     generator = np.random.default_rng(0)
 
-    for step in range(iterations):
-        view = views[generator.integers(len(views))]
-        rendered = _rasterize(parameters, view, device)
+    # Kamerajusteringen hålls utanför `optimizers`: den ordboken tillhör
+    # förtätningsstrategin, som förutsätter att varje post är en gaussarlista.
+    deltas = None
+    pose_optimizer = None
+    if refine_poses:
+        deltas = torch.nn.Parameter(torch.zeros(len(views), 6, device=device))
+        pose_optimizer = torch.optim.Adam([deltas], lr=POSE_LEARNING_RATE)
 
-        loss = (rendered - view["image"]).abs().mean()
-        optimizer.zero_grad(set_to_none=True)
+    for step in range(iterations):
+        index = int(generator.integers(len(views)))
+        view = views[index]
+        viewmat = view["viewmat"] if deltas is None else _nudged(view["viewmat"], deltas[index])
+        rendered, info = _rasterize(parameters, view, device, viewmat)
+
+        loss = ((1 - SSIM_WEIGHT) * (rendered - view["image"]).abs().mean()
+                + SSIM_WEIGHT * (1 - _ssim(rendered, view["image"])))
+        if strategy is not None:
+            # Med ett fast antal gaussare är det billigt att lägga sig som dimma
+            # över hela rummet: många halvgenomskinliga klumpar sänker
+            # pixelfelet utan att någon yta blir skarp. Straffen gör dimman dyr,
+            # så budgeten går till täta gaussare som sitter på en yta.
+            loss = (loss
+                    + OPACITY_PENALTY * torch.sigmoid(parameters["opacities"]).abs().mean()
+                    + SCALE_PENALTY * torch.exp(parameters["scales"]).abs().mean())
+
+        for optimizer in optimizers.values():
+            optimizer.zero_grad(set_to_none=True)
+        if pose_optimizer is not None:
+            pose_optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        optimizer.step()
+
+        for optimizer in optimizers.values():
+            optimizer.step()
+        if pose_optimizer is not None:
+            pose_optimizer.step()
+
+        if strategy is not None:
+            # Bruset som flyttar de slocknade gaussarna skalas med lägenas
+            # inlärningstakt, och den trappas ned. Sent i träningen ska en
+            # gaussare som hittat sin plats stå still.
+            strategy.step_post_backward(params=parameters, optimizers=optimizers,
+                                        state=state, step=step, info=info,
+                                        lr=schedule.get_last_lr()[0])
+        schedule.step()
 
         with torch.no_grad():
             parameters["colors"].clamp_(0.0, 1.0)
 
         if step % 500 == 0:
-            log.info("steg %d/%d, förlust %.4f", step, iterations, float(loss.detach()))
+            log.info("steg %d/%d, förlust %.4f, %d gaussare",
+                     step, iterations, float(loss.detach()), len(parameters["means"]))
 
-    return SplatModel(
+    model = SplatModel(
         means=parameters["means"].detach().cpu().numpy(),
         quats=parameters["quats"].detach().cpu().numpy(),
         scales=parameters["scales"].detach().cpu().numpy(),
         opacities=parameters["opacities"].detach().cpu().numpy(),
         colors=parameters["colors"].detach().cpu().numpy(),
+        poses=_refined(frames, views, deltas) if deltas is not None else None,
     )
+    return _trimmed(model, bundle)
+
+
+def write_ply(model: SplatModel, path) -> None:
+    """Skriver splatten i 3DGS vanliga PLY-format.
+
+    Färgen ligger som SH-nollterm, vilket är vad visarna väntar sig — därför
+    omräkningen nedan.
+
+    Ingen gallring sker här. Telefonens tak är träningens tak, så det som
+    skrivs är det som optimerades — se ``train``.
+
+    Ordningen är slumpad. Telefonen visar splatten medan den läses, och
+    gaussarna ligger annars kvar i startpunkternas ordning — som är sorterad
+    efter x, eftersom ``_seed`` går via ``np.unique``. Läser man den rakt av
+    växer rummet fram som en vägg i taget och kameran, som ställs efter det
+    inlästas låda, svänger med. Slumpad ordning gör att hela rummet syns direkt
+    och bara förtätas.
+    """
+    from pathlib import Path
+
+    count = len(model.means)
+    fields = (["x", "y", "z", "nx", "ny", "nz"]
+              + [f"f_dc_{channel}" for channel in range(3)]
+              + ["opacity"]
+              + [f"scale_{axis}" for axis in range(3)]
+              + [f"rot_{component}" for component in range(4)])
+
+    order = np.random.default_rng(0).permutation(count)
+    table = np.zeros((count, len(fields)), np.float32)
+    table[:, 0:3] = model.means[order]
+    # Normalerna används inte av någon visare men hör till formatet.
+    table[:, 6:9] = (model.colors[order] - 0.5) / SH_DC
+    table[:, 9] = model.opacities[order]
+    table[:, 10:13] = model.scales[order]
+    table[:, 13:17] = model.quats[order]
+
+    header = "\n".join(["ply", "format binary_little_endian 1.0",
+                        f"element vertex {count}"]
+                       + [f"property float {name}" for name in fields]
+                       + ["end_header", ""])
+
+    with Path(path).open("wb") as file:
+        file.write(header.encode("ascii"))
+        file.write(table.tobytes())
+    log.info("skrev %d gaussare till %s", count, path)
+
+
+def _trimmed(model: SplatModel, bundle: ScanBundle) -> SplatModel:
+    """Utan de osynliga och de bortflugna.
+
+    Båda är rena kostnader: de laddas ner, sorteras om varje bildruta och
+    behandlas av vertexskuggaren, utan att lämna en pixel efter sig. De
+    bortflugna är dessutom aktivt skadliga — telefonen ställer kameran efter
+    splattens låda, och några gaussare en kilometer bort lägger rummet utom
+    synhåll.
+    """
+    import dataclasses
+
+    corners = bundle.mesh.positions.reshape(-1, 3)
+    low, high = corners.min(axis=0) - ROOM_MARGIN, corners.max(axis=0) + ROOM_MARGIN
+
+    keep = (np.all((model.means >= low) & (model.means <= high), axis=1)
+            & (model.opacities >= np.log(MINIMUM_OPACITY / (1 - MINIMUM_OPACITY))))
+
+    log.info("behåller %d av %d gaussare", int(keep.sum()), len(model))
+    return dataclasses.replace(model,
+                               means=model.means[keep],
+                               quats=model.quats[keep],
+                               scales=model.scales[keep],
+                               opacities=model.opacities[keep],
+                               colors=model.colors[keep])
 
 
 def synthetic_keyframes(model: SplatModel,
@@ -137,6 +343,10 @@ def synthetic_keyframes(model: SplatModel,
 
     De inskjutna vyerna är hela vinsten med att gå via en splat: de ser ytor
     som råkade hamna mellan två foton.
+
+    Fick kamerorna glida under träningen renderas det ur de justerade poserna.
+    Splatten är skarp bara sett från de poser den tränades i; ur ARKits
+    ursprungliga står bilden några centimeter fel och bakningen smetar igen.
     """
     import torch
 
@@ -150,10 +360,10 @@ def synthetic_keyframes(model: SplatModel,
     }
 
     rendered: list[Keyframe] = []
-    for identifier, (frame, pose, exact) in enumerate(_poses(bundle, extra_views)):
+    for identifier, (frame, pose, exact) in enumerate(_poses(bundle, extra_views, model.poses)):
         view = _view(frame, device, camera_from_world=pose)
         with torch.no_grad():
-            image = _rasterize(parameters, view, device)
+            image, _ = _rasterize(parameters, view, device)
 
         # Står vyn i ett fotos pose gäller fotots djupkarta ordagrant. Gör den
         # inte det finns ingen mätning att luta sig mot, och en gissning vore
@@ -222,46 +432,147 @@ def _view(frame: Keyframe, device: str, camera_from_world: np.ndarray | None = N
     }
 
 
-def _rasterize(parameters: dict, view: dict, device: str):
+def _densification(budget: int):
+    """gsplats MCMC-strategi, med telefonens tak som antal.
+
+    Standardstrategin delar och klonar tills bilden stämmer och kan inte hållas
+    på ett antal — den lämnar över den frågan till exporten, som bara ser
+    geometri och inte vad varje gaussare bidrog med. MCMC håller i stället
+    antalet fast och flyttar de gaussare som slocknat dit felet är störst, så
+    hela budgeten hela tiden ligger där bilden behöver den.
+    """
+    from gsplat.strategy import MCMCStrategy
+
+    strategy = MCMCStrategy(cap_max=budget, verbose=False)
+    return strategy, strategy.initialize_state()
+
+
+def _nudged(viewmat, delta):
+    """Kameran flyttad med en liten stelkroppsrörelse.
+
+    Rotationen ligger som axel-vinkel och vecklas ut med Rodrigues formel. En
+    matris byggd bit för bit i stället för tilldelad på plats, så gradienten
+    hittar hela vägen tillbaka till ``delta``.
+    """
+    import torch
+
+    rotation, translation = delta[:3], delta[3:]
+    zero = torch.zeros((), device=delta.device, dtype=delta.dtype)
+    skew = torch.stack([
+        torch.stack([zero, -rotation[2], rotation[1]]),
+        torch.stack([rotation[2], zero, -rotation[0]]),
+        torch.stack([-rotation[1], rotation[0], zero]),
+    ])
+    # Termen är singulär i noll, och noll är precis där träningen börjar.
+    angle = torch.linalg.norm(rotation) + 1e-8
+    matrix = (torch.eye(3, device=delta.device, dtype=delta.dtype)
+              + torch.sin(angle) / angle * skew
+              + (1 - torch.cos(angle)) / angle ** 2 * (skew @ skew))
+
+    bottom = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=delta.device, dtype=delta.dtype)
+    nudge = torch.cat([torch.cat([matrix, translation[:, None]], dim=1), bottom], dim=0)
+    return (nudge @ viewmat[0])[None]
+
+
+def _refined(frames: list[Keyframe], views: list[dict], deltas) -> np.ndarray:
+    """De justerade kamerorna tillbaka i ARKits koordinatsystem."""
+    import torch
+
+    poses = []
+    for index, frame in enumerate(frames):
+        with torch.no_grad():
+            viewmat = _nudged(views[index]["viewmat"], deltas[index])[0].cpu().numpy()
+        # `_ARKIT_TO_OPENCV` är sin egen invers, så samma matris på båda sidor.
+        poses.append(_ARKIT_TO_OPENCV @ viewmat)
+
+    # Kamerans plats i rummet, inte matrisens translationsdel: den senare är
+    # −R·C och ändrar sig även när kameran bara vridit sig.
+    moved = [float(np.linalg.norm(np.linalg.inv(pose)[:3, 3]
+                                  - np.linalg.inv(frame.camera_from_world)[:3, 3]))
+             for pose, frame in zip(poses, frames)]
+    log.info("kamerorna flyttade sig %.1f mm i median, som mest %.1f mm",
+             float(np.median(moved)) * 1000, float(np.max(moved)) * 1000)
+    return np.stack(poses).astype(np.float32)
+
+
+def _ssim(rendered, target, window: int = 11, sigma: float = 1.5):
+    """Strukturlikhet mellan två bilder, 1 om de är identiska.
+
+    Finns här för att L1 ensamt inte straffar suddighet: ett medelvärde av två
+    foton som är oense ligger nära båda i pixelavstånd. SSIM jämför i stället
+    lokal kontrast och samvariation, och en utsmetad vägg tappar båda.
+    """
+    import torch
+    import torch.nn.functional as functional
+
+    first, second = rendered.permute(2, 0, 1)[None], target.permute(2, 0, 1)[None]
+    channels = first.shape[1]
+
+    offsets = torch.arange(window, device=first.device, dtype=first.dtype) - window // 2
+    weights = torch.exp(-offsets ** 2 / (2 * sigma ** 2))
+    weights = weights / weights.sum()
+    # Separabelt: två endimensionella svep i stället för ett 11×11-fönster.
+    horizontal = weights.view(1, 1, 1, window).repeat(channels, 1, 1, 1)
+    vertical = weights.view(1, 1, window, 1).repeat(channels, 1, 1, 1)
+
+    def blur(image):
+        image = functional.conv2d(image, horizontal, padding=(0, window // 2), groups=channels)
+        return functional.conv2d(image, vertical, padding=(window // 2, 0), groups=channels)
+
+    mean_first, mean_second = blur(first), blur(second)
+    first_squared, second_squared = mean_first ** 2, mean_second ** 2
+    crossed = mean_first * mean_second
+    variance_first = blur(first * first) - first_squared
+    variance_second = blur(second * second) - second_squared
+    covariance = blur(first * second) - crossed
+
+    stabiliser, contrast = 0.01 ** 2, 0.03 ** 2
+    return (((2 * crossed + stabiliser) * (2 * covariance + contrast))
+            / ((first_squared + second_squared + stabiliser)
+               * (variance_first + variance_second + contrast))).mean()
+
+
+def _rasterize(parameters: dict, view: dict, device: str, viewmat=None):
     import torch
     from gsplat import rasterization
 
     width, height = view["size"]
-    render, _, _ = rasterization(
+    render, _, info = rasterization(
         means=parameters["means"],
         quats=torch.nn.functional.normalize(parameters["quats"], dim=-1),
         scales=torch.exp(parameters["scales"]),
         opacities=torch.sigmoid(parameters["opacities"]),
         colors=parameters["colors"],
-        viewmats=view["viewmat"],
+        viewmats=view["viewmat"] if viewmat is None else viewmat,
         Ks=view["K"],
         width=width,
         height=height,
         render_mode="RGB",
     )
-    return render[0, ..., :3]
+    return render[0, ..., :3], info
 
 
 def _poses(bundle: ScanBundle,
-           extra_views: int) -> list[tuple[Keyframe, np.ndarray, bool]]:
+           extra_views: int,
+           refined: np.ndarray | None = None) -> list[tuple[Keyframe, np.ndarray, bool]]:
     """De riktiga poserna, med några inskjutna emellan.
 
     Flaggan säger om posen är ett fotos egen. Bara då finns en uppmätt djupkarta
     som gäller för vyn.
     """
     frames = bundle.keyframes
+    cameras = ([frame.camera_from_world for frame in frames] if refined is None
+               else list(refined))
     poses: list[tuple[Keyframe, np.ndarray, bool]] = []
 
     for index, frame in enumerate(frames):
-        poses.append((frame, frame.camera_from_world, True))
+        poses.append((frame, cameras[index], True))
         if extra_views <= 0 or index + 1 >= len(frames):
             continue
 
-        following = frames[index + 1]
         for step in range(1, extra_views + 1):
             fraction = step / (extra_views + 1)
-            poses.append((frame, _between(frame.camera_from_world,
-                                          following.camera_from_world, fraction), False))
+            poses.append((frame, _between(cameras[index], cameras[index + 1], fraction), False))
     return poses
 
 
