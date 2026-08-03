@@ -14,8 +14,8 @@ import trimesh
 from spatialfit_server.bundle import Keyframe, ScanBundle
 from spatialfit_server.mesh import SceneMesh
 from spatialfit_server.pipeline import bake_room
-from spatialfit_server.splat import (SplatModel, _between, _poses, _seed, _trimmed,
-                                     write_ply)
+from spatialfit_server.splat import (MAXIMUM_DRIFT, SplatModel, _between, _poses,
+                                     _pulled_to_surface, _seed, _trimmed, write_ply)
 
 
 def keyframe(identifier: int, angle: float) -> Keyframe:
@@ -123,6 +123,34 @@ def test_startpunkterna_glesas_till_taket():
     means, scales = _seed(scan, max_splats=4)
 
     assert len(means) == len(scales) == 4
+
+
+def test_gaussare_som_svavar_ut_i_rummet_dras_tillbaka():
+    from scipy.spatial import cKDTree
+
+    # Lådans vägg ligger på x = 1. En gaussare mitt i rummet svävar alltså fritt.
+    surface = np.unique(bundle().mesh.positions.reshape(-1, 3), axis=0).astype(np.float32)
+    points = np.array([[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]], np.float32)
+
+    moved, pulled = _pulled_to_surface(points, cKDTree(surface), surface)
+
+    assert pulled == 1
+    # Den som redan satt på ytan rörs inte.
+    assert np.allclose(moved[0], points[0])
+    # Den fria hamnar precis vid gränsen, i den riktning den drev åt.
+    assert np.isclose(np.linalg.norm(moved[1] - surface[np.argmin(
+        np.linalg.norm(surface - points[1], axis=1))]), MAXIMUM_DRIFT, atol=1e-5)
+
+
+def test_ytan_lamnas_ifred_nar_ingen_drivit():
+    from scipy.spatial import cKDTree
+
+    surface = np.unique(bundle().mesh.positions.reshape(-1, 3), axis=0).astype(np.float32)
+
+    moved, pulled = _pulled_to_surface(surface.copy(), cKDTree(surface), surface)
+
+    assert pulled == 0
+    assert np.allclose(moved, surface)
 
 
 def test_bortflugna_och_osynliga_gaussare_kastas():

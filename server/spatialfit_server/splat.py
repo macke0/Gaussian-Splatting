@@ -22,6 +22,13 @@ gaussare per LiDAR-hörn är ett tak på detaljnivån, och det taket ligger unde
 fotots: 200 000 hörn mot 40 foton à 1536 px. Därför får gsplat dela och klona
 där bilden inte stämmer. Mätningen rörs inte — den kommer aldrig härifrån.
 
+**Gaussarna hålls vid den mätta ytan.** Fritt tränad lägger sig en splat gärna
+som dimma mellan kameran och väggen: många halvgenomskinliga klumpar mitt i
+rummet sänker pixelfelet billigare än en skarp yta gör. Vanlig 3DGS har inget
+att sätta emot, men vi har LiDAR-ytan. ``MAXIMUM_DRIFT`` och ``MAXIMUM_RADIUS``
+säger därför att en gaussare ska sitta på det som mätts upp och vara stor som en
+bit av det. Då finns inget billigt alternativ till att bli skarp.
+
 **Poserna får glida, men bara för bildens skull.** De kommer från ARKit och
 duger till att mäta med. Till att *måla* med gör de det inte: reprojektionsfelet
 är 2–3 cm, vilket vid 1536 px är 15–20 pixlars glidning mellan två foton av samma
@@ -140,6 +147,24 @@ MINIMUM_OPACITY = 0.05
 #: 1 343 meter i stället för 9.
 ROOM_MARGIN = 1.0
 
+#: Största radie en gaussare får ha. Ytan den ska beskriva är mätt med 12 mm
+#: mellan hörnen; en gaussare på en halv meter beskriver ingen yta alls utan
+#: lägger en färgtvätt över halva rummet. Det sänker pixelfelet billigt och är
+#: precis vad ett dimmigt rum består av. Uppmätt på det riktiga rummet innan
+#: taket fanns: största radien var 1,46 m, och de tio största satt mitt i luften.
+MAXIMUM_RADIUS = 0.05
+
+#: Hur långt från LiDAR-ytan en gaussare får driva. Ytan är mätt — en gaussare
+#: som svävar en decimeter ut i rummet representerar ingenting som finns där.
+#: Uppmätt utan gränsen: 74 % av gaussarna låg mer än 2 cm från ytan och bar
+#: 91 % av den synliga massan, alltså var rummet mest dimma.
+MAXIMUM_DRIFT = 0.02
+
+#: Hur ofta de som drivit iväg dras tillbaka. Varje steg vore slöseri — en
+#: gaussare rör sig bråkdelar av en millimeter per steg — och frågan mot
+#: KD-trädet kostar en halv sekund för hela budgeten.
+SURFACE_INTERVAL = 250
+
 
 def train(bundle: ScanBundle,
           iterations: int = DEFAULT_ITERATIONS,
@@ -163,6 +188,7 @@ def train(bundle: ScanBundle,
     som skickas till telefonen är då exakt det som optimerades.
     """
     import torch
+    from scipy.spatial import cKDTree
 
     device = _device()
     frames = [frame for frame in bundle.keyframes if frame.image.size]
@@ -199,6 +225,12 @@ def train(bundle: ScanBundle,
 
     strategy, state = _densification(budget) if densify else (None, None)
 
+    # Ytan som gaussarna hålls vid. Hela LiDAR-ytan, inte de utglesade
+    # startpunkterna: det som ska hindras är drift ut i rummet, och då gäller
+    # varje mätt punkt.
+    surface = np.unique(bundle.mesh.positions.reshape(-1, 3), axis=0).astype(np.float32)
+    tree = cKDTree(surface)
+
     views = [_view(frame, device) for frame in frames]
     generator = np.random.default_rng(0)
 
@@ -210,6 +242,7 @@ def train(bundle: ScanBundle,
         deltas = torch.nn.Parameter(torch.zeros(len(views), 6, device=device))
         pose_optimizer = torch.optim.Adam([deltas], lr=POSE_LEARNING_RATE)
 
+    pulled = 0
     for step in range(iterations):
         index = int(generator.integers(len(views)))
         view = views[index]
@@ -249,10 +282,16 @@ def train(bundle: ScanBundle,
 
         with torch.no_grad():
             parameters["colors"].clamp_(0.0, 1.0)
+            parameters["scales"].clamp_(max=float(np.log(MAXIMUM_RADIUS)))
+            if step % SURFACE_INTERVAL == 0 or step == iterations - 1:
+                moved, pulled = _pulled_to_surface(
+                    parameters["means"].detach().cpu().numpy(), tree, surface)
+                if pulled:
+                    parameters["means"].copy_(torch.tensor(moved, device=device))
 
         if step % 500 == 0:
-            log.info("steg %d/%d, förlust %.4f, %d gaussare",
-                     step, iterations, float(loss.detach()), len(parameters["means"]))
+            log.info("steg %d/%d, förlust %.4f, %d gaussare, %d drog tillbaka",
+                     step, iterations, float(loss.detach()), len(parameters["means"]), pulled)
 
     model = SplatModel(
         means=parameters["means"].detach().cpu().numpy(),
@@ -308,6 +347,28 @@ def write_ply(model: SplatModel, path) -> None:
         file.write(header.encode("ascii"))
         file.write(table.tobytes())
     log.info("skrev %d gaussare till %s", count, path)
+
+
+def _pulled_to_surface(points: np.ndarray, tree, surface: np.ndarray) -> tuple[np.ndarray, int]:
+    """De gaussare som drivit för långt ut, dragna tillbaka mot den mätta ytan.
+
+    Dras till skalet ``MAXIMUM_DRIFT`` från ytan och inte hela vägen ned på den:
+    riktningen den drev åt är oftast rätt — det är avståndet som är fel — och en
+    gaussare som slängs ned på ytan varje gång tappar det den lärt sig.
+
+    Att göra det här i stället för att straffa avståndet i förlusten är ett val:
+    ytan är *mätt*, inte gissad, så det finns inget att väga den mot.
+    """
+    distance, nearest = tree.query(points, k=1)
+    drifted = distance > MAXIMUM_DRIFT
+    if not drifted.any():
+        return points, 0
+
+    outward = points[drifted] - surface[nearest[drifted]]
+    outward /= np.linalg.norm(outward, axis=1, keepdims=True)
+    moved = points.copy()
+    moved[drifted] = surface[nearest[drifted]] + outward * MAXIMUM_DRIFT
+    return moved, int(drifted.sum())
 
 
 def _trimmed(model: SplatModel, bundle: ScanBundle) -> SplatModel:
