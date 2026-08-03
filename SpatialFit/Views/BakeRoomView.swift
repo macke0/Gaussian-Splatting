@@ -35,8 +35,19 @@ struct BakeRoomView: View {
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text("Bakningen sker på en dator i butiken. Telefonen mäter, "
-                         + "servern målar.")
+                    // En låst Baka-knapp utan förklaring läses som att servern
+                    // är nere. Den vanligaste orsaken är att http:// glömts —
+                    // utan schema och värd finns ingen adress att ladda upp till.
+                    if address.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Text("Bakningen sker på en dator i butiken. Telefonen "
+                             + "mäter, servern målar.")
+                    } else if server == nil {
+                        Text("Adressen behöver både http:// och en värd, som "
+                             + "http://192.168.1.20:8000.")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Servern kontaktas först när du trycker Baka.")
+                    }
                 }
 
                 Section {

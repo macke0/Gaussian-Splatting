@@ -89,11 +89,9 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         guard let captureView else { return }
         phase = .scanning
 
-        // Ordningen är avgörande. `RoomCaptureSession.run` kör om den delade
-        // ARSession:en med sin egen konfiguration, som saknar
-        // `sceneReconstruction`. Startar vi först blir vår inställning
-        // överskriven, och då finns inga `ARMeshAnchor` att hämta på slutet —
-        // rummet blir RoomPlans lådor trots att kunden filmade hela rummet.
+        // Ordningen spelar mindre roll än den ser ut att göra: RoomPlan kör om
+        // sessionen med sin egen konfiguration även efter det här. Det som
+        // räddar scenrekonstruktionen är omkörningen i `countTriangles()`.
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         arSession.run(Self.configuration())
 
@@ -119,8 +117,11 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
             + " · \(anchors.count) anchors, \(meshes.count) mesh"
             + " · djup \(frame?.sceneDepth == nil ? "nej" : "ja")"
 
-        // Kör sessionen utan rekonstruktion har någon annan kört om den efter
-        // oss. Ett försök till, en gång, kostar ingenting om gissningen är fel.
+        // Det här är vad som faktiskt får ytan att finnas. RoomPlan kör om den
+        // delade sessionen med sin egen konfiguration en stund EFTER att
+        // `captureSession.run` returnerat, så vår scenrekonstruktion hinner bli
+        // överskriven hur vi än lägger anropen i `start()`. Att sätta tillbaka
+        // den när vi ser att den är borta är enda vägen som fungerar på enhet.
         if !hasRetriedConfiguration, running?.contains(.mesh) != true {
             hasRetriedConfiguration = true
             arSession.run(Self.configuration())
