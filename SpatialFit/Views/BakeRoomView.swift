@@ -78,9 +78,8 @@ struct BakeRoomView: View {
     private var status: some View {
         switch model.phase {
         case .idle:
-            if !canBake {
-                Label("Rummet saknar tät yta eller foton. Skanna om det.",
-                      systemImage: "exclamationmark.triangle")
+            if let missing {
+                Label(missing, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             }
         case .working(let message):
@@ -103,8 +102,21 @@ struct BakeRoomView: View {
         }
     }
 
-    private var canBake: Bool {
-        store.sceneMesh(for: room) != nil && !store.keyframes(for: room).isEmpty
+    private var canBake: Bool { missing == nil }
+
+    /// Vad som fattas, om något. Att peka ut vilket av de två spar en skanning:
+    /// en saknad yta och saknade foton kräver olika saker av kunden.
+    private var missing: String? {
+        switch (store.sceneMesh(for: room) != nil, store.keyframes(for: room).isEmpty) {
+        case (true, false):
+            nil
+        case (false, false):
+            "Rummet saknar den täta ytan — det sparades som RoomPlans lådor. Skanna om det."
+        case (true, true):
+            "Rummet saknar foton att måla med. Skanna om det."
+        case (false, true):
+            "Rummet saknar både tät yta och foton. Skanna om det."
+        }
     }
 
     private var surfaceDescription: String {

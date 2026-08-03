@@ -74,8 +74,15 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     func start() {
         guard let captureView else { return }
         phase = .scanning
-        arSession.run(Self.configuration())
+
+        // Ordningen är avgörande. `RoomCaptureSession.run` kör om den delade
+        // ARSession:en med sin egen konfiguration, som saknar
+        // `sceneReconstruction`. Startar vi först blir vår inställning
+        // överskriven, och då finns inga `ARMeshAnchor` att hämta på slutet —
+        // rummet blir RoomPlans lådor trots att kunden filmade hela rummet.
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
+        arSession.run(Self.configuration())
+
         // Fotona hämtas ur samma session, utan att dess delegat tas över.
         recorder.start(session: arSession)
     }
