@@ -56,6 +56,13 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     private(set) var liveTriangleCount = 0
     @ObservationIgnored private var meshWatch: Timer?
 
+    /// Vad sessionen faktiskt kör, inte vad vi bad om. Skillnaden är hela frågan:
+    /// står rekonstruktionen på `av` har någon skrivit över vår konfiguration,
+    /// står den på `mesh` utan att trianglarna växer är det avläsningen av
+    /// anchors som är fel. Utan enhet i handen går det inte att gissa fram.
+    private(set) var sessionState = ""
+    @ObservationIgnored private var hasRetriedConfiguration = false
+
     override init() {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "scan-\(UUID().uuidString)")
@@ -102,9 +109,30 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     }
 
     private func countTriangles() {
-        liveTriangleCount = (arSession.currentFrame?.anchors ?? [])
-            .compactMap { $0 as? ARMeshAnchor }
-            .reduce(0) { $0 + $1.geometry.faces.count }
+        let frame = arSession.currentFrame
+        let anchors = frame?.anchors ?? []
+        let meshes = anchors.compactMap { $0 as? ARMeshAnchor }
+        liveTriangleCount = meshes.reduce(0) { $0 + $1.geometry.faces.count }
+
+        let running = (arSession.configuration as? ARWorldTrackingConfiguration)?.sceneReconstruction
+        sessionState = "rekonstruktion \(Self.describe(running))"
+            + " · \(anchors.count) anchors, \(meshes.count) mesh"
+            + " · djup \(frame?.sceneDepth == nil ? "nej" : "ja")"
+
+        // Kör sessionen utan rekonstruktion har någon annan kört om den efter
+        // oss. Ett försök till, en gång, kostar ingenting om gissningen är fel.
+        if !hasRetriedConfiguration, running?.contains(.mesh) != true {
+            hasRetriedConfiguration = true
+            arSession.run(Self.configuration())
+        }
+    }
+
+    private static func describe(_ mode: ARConfiguration.SceneReconstruction?) -> String {
+        guard let mode else { return "ingen konfiguration" }
+        if mode.contains(.meshWithClassification) { return "mesh+klassificering" }
+        if mode.contains(.mesh) { return "mesh" }
+        return ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
+            ? "av" : "stöds inte av enheten"
     }
 
     /// Det RoomPlan behöver — djup och släta djupkartor — plus scenrekonstruktion.

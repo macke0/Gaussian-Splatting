@@ -90,6 +90,11 @@ struct RoomScanView: View {
                     ? "exclamationmark.triangle"
                     : "checkmark.circle")
                 .foregroundStyle(scan.liveTriangleCount == 0 ? .orange : .green)
+
+            Text(scan.sessionState)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .font(.footnote)
         .padding(.horizontal, 14)
