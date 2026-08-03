@@ -22,7 +22,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
+from .identify import VisionError, describe
 from .pipeline import COLOR_SOURCES, DEFAULT_COLOR_SOURCE, bake_room
 
 log = logging.getLogger(__name__)
@@ -40,7 +42,18 @@ class Job:
     result: Path | None = field(default=None)
 
 
+# Ett utsnitt ur ett foto, inte ett foto. Blir det större är det något annat som
+# skickats upp av misstag.
+MAXIMUM_CROP_BYTES = 8 * 1024 * 1024
+
 app = FastAPI(title="SpatialFit-bakning")
+# uvicorn sätter upp sina egna loggare och lämnar rotloggaren tyst, så våra rader
+# — hur många gaussare, hur stor del av texlarna som såg ett foto — försvann helt
+# och serverloggen bestod av åtkomstrader. Det är de raderna man behöver när
+# någon undrar varför ett rum blev suddigt.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+logging.getLogger("spatialfit_server").setLevel(logging.INFO)
+
 jobs: dict[str, Job] = {}
 # En bakning i taget. Den är minnestung, och två parallella tar inte halva
 # tiden — de tar dubbelt så mycket RAM.
@@ -81,7 +94,8 @@ async def bake_status(job_id: str) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="okänt jobb")
     return {"id": job.id, "status": job.status, "detail": job.detail,
-            "seenFraction": job.seen_fraction, "triangleCount": job.triangle_count}
+            "seenFraction": job.seen_fraction, "triangleCount": job.triangle_count,
+            "hasSplat": job.result is not None and (job.result / "splat.ply").exists()}
 
 
 @app.get("/bake/{job_id}/mesh")
@@ -92,6 +106,28 @@ async def bake_mesh(job_id: str) -> FileResponse:
 @app.get("/bake/{job_id}/texture")
 async def bake_texture(job_id: str) -> FileResponse:
     return _file(job_id, "baked.png", "image/png")
+
+
+@app.get("/bake/{job_id}/splat")
+async def bake_splat(job_id: str) -> FileResponse:
+    """Splatten som PLY. Finns bara när färgkällan var ``splat``."""
+    return _file(job_id, "splat.ply", "application/octet-stream")
+
+
+@app.post("/identify")
+async def identify(crop: UploadFile, hint: str = Form("")) -> dict:
+    """Vad utsnittet föreställer. En bild i taget, så telefonen kan visa svaren
+    efter hand i stället för att vänta ut hela rummet."""
+    image = await crop.read()
+    if not image:
+        raise HTTPException(status_code=400, detail="tom bild")
+    if len(image) > MAXIMUM_CROP_BYTES:
+        raise HTTPException(status_code=413, detail="utsnittet är för stort")
+
+    try:
+        return await run_in_threadpool(describe, image, hint or None)
+    except VisionError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 def _file(job_id: str, name: str, media_type: str) -> FileResponse:
