@@ -72,6 +72,33 @@ final class RoomStore {
             .appending(path: TexturedMesh.meshFilename).path)
     }
 
+    /// Splatten, om servern tränade fram en. Den är bara till för att titta på —
+    /// måtten kommer från meshen.
+    func splatURL(for room: SavedRoom) -> URL? {
+        let url = directory(for: room).appending(path: BakeService.splatFilename)
+        return fileManager.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Bakningen som pågår på servern för rummet, om någon gör det. Ligger på
+    /// disk och inte i minnet: en bakning tar en kvart, och appen kan mycket väl
+    /// avslutas under tiden. Jobbet lever ändå kvar på servern.
+    func pendingBake(for room: SavedRoom) -> PendingBake? {
+        let url = directory(for: room).appending(path: Self.pendingBakeFilename)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(PendingBake.self, from: data)
+    }
+
+    func setPendingBake(_ bake: PendingBake?, for room: SavedRoom) {
+        let url = directory(for: room).appending(path: Self.pendingBakeFilename)
+        guard let bake else {
+            try? fileManager.removeItem(at: url)
+            return
+        }
+        try? JSONEncoder().encode(bake).write(to: url, options: .atomic)
+    }
+
+    private static let pendingBakeFilename = "bake.job"
+
     /// Filerna bakningsservern behöver. USDZ:n och `CapturedRoom` stannar på
     /// telefonen — servern målar ytan, den tolkar inte rummet.
     func scanFiles(for room: SavedRoom) -> [URL] {
@@ -96,8 +123,15 @@ final class RoomStore {
     /// stället för att cachas, så att förbättrad mätlogik slår igenom på gamla
     /// rum utan migrering.
     func niches(in room: SavedRoom) -> [ScannedNiche] {
+        NicheFinder.niches(in: elements(in: room))
+    }
+
+    /// Rummets beståndsdelar som orienterade lådor, med RoomPlans klassning
+    /// kvar i `detail`. Det är härifrån vi vet att något ÄR en spis, och hur
+    /// stor just den spisen är.
+    func elements(in room: SavedRoom) -> [RoomElement] {
         guard let captured = capturedRoom(for: room) else { return [] }
-        return NicheFinder.niches(in: CapturedRoomReader.elements(from: captured))
+        return CapturedRoomReader.elements(from: captured)
     }
 
     private func capturedRoom(for room: SavedRoom) -> CapturedRoom? {

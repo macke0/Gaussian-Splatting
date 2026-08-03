@@ -11,6 +11,7 @@ import SwiftUI
 struct RoomLibraryView: View {
 
     @State private var store = RoomStore()
+    @State private var queue = BakeQueue()
     @State private var showsScanner = false
     @State private var openRoom: SavedRoom?
 
@@ -30,9 +31,12 @@ struct RoomLibraryView: View {
                 }
             }
             .navigationDestination(item: $openRoom) { room in
-                RoomViewerView(room: room, store: store)
+                RoomViewerView(room: room, store: store, queue: queue)
             }
         }
+        // Bakningar som pågick när appen stängdes lever kvar på servern. Att
+        // koppla upp sig mot dem igen är billigare än att ladda upp allt på nytt.
+        .task { queue.resumePending(in: store) }
         .sheet(isPresented: $showsScanner) {
             RoomScanView(store: store) { saved in
                 openRoom = saved
@@ -79,6 +83,13 @@ struct RoomLibraryView: View {
                 Text("\(room.scannedAtDescription) · \(nicheSummary(room))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            // Rummet går att öppna och mäta i medan det målas. Snurran är där
+            // för att bakningen ska synas, inte för att den ska inväntas.
+            if queue.isWorking(room) {
+                Spacer(minLength: 0)
+                ProgressView()
             }
         }
         .padding(.vertical, 4)

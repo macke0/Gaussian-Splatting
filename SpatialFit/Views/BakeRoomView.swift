@@ -2,7 +2,10 @@
 //  BakeRoomView.swift
 //  SpatialFit
 //
-//  Skicka rummet till bakningsservern och vänta ut den.
+//  Skicka rummet till bakningsservern.
+//
+//  Arket väntar inte ut bakningen — det lämnar över den till `BakeQueue` och
+//  stänger. Att måla rummet tar minuter, och kunden har redan fått sina mått.
 //
 //  Adressen sitter i appen, inte i en inställningsvy: servern är en maskin i ett
 //  rum, och den som ställer in den är samma person som just har skannat.
@@ -14,12 +17,10 @@ struct BakeRoomView: View {
 
     let room: SavedRoom
     let store: RoomStore
-    /// Anropas när ett bakat rum ligger på disk, så vyn bakom kan läsa om det.
-    var onFinished: () -> Void
+    let queue: BakeQueue
 
     @AppStorage("bakeServer") private var address = ""
     @AppStorage("bakeColorSource") private var colorSource = BakeService.ColorSource.blend.rawValue
-    @State private var model = RoomBakeModel()
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -31,7 +32,6 @@ struct BakeRoomView: View {
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .disabled(model.isWorking)
                 } header: {
                     Text("Server")
                 } footer: {
@@ -56,10 +56,13 @@ struct BakeRoomView: View {
                             Text(source.label).tag(source.rawValue)
                         }
                     }
-                    .disabled(model.isWorking)
                 } footer: {
-                    Text("Gaussian splatting fyller hål och jämnar ut skarvar, men "
-                         + "kräver att servern har ett grafikkort.")
+                    Text(colorSource == BakeService.ColorSource.splat.rawValue
+                         ? "Servern tränar en gaussian splat, vilket tar omkring en "
+                           + "kvart men ger den skarpaste bilden av rummet. Kräver "
+                           + "ett grafikkort."
+                         : "Fotona vägs ihop per yta. Tar ett par minuter och går "
+                           + "på vilken dator som helst.")
                 }
 
                 Section {
@@ -74,42 +77,29 @@ struct BakeRoomView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Stäng") { dismiss() }
-                        .disabled(model.isWorking)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Baka") { start() }
-                        .disabled(server == nil || model.isWorking || !canBake)
+                        .disabled(server == nil || queue.isWorking(room) || !canBake)
                 }
             }
-            .interactiveDismissDisabled(model.isWorking)
         }
     }
 
     @ViewBuilder
     private var status: some View {
-        switch model.phase {
-        case .idle:
-            if let missing {
-                Label(missing, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-            }
-        case .working(let message):
-            HStack(spacing: 12) {
-                ProgressView()
-                Text(message)
-            }
-        case .done(let summary):
-            VStack(alignment: .leading, spacing: 6) {
-                Label("Rummet är målat.", systemImage: "checkmark.circle")
-                    .foregroundStyle(.green)
-                Text("\(summary.triangleCount) trianglar, "
-                     + "\(Int(summary.seenFraction * 100)) % av ytan fotograferad.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        case .failed(let reason):
-            Label(reason, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.red)
+        if queue.isWorking(room) {
+            Label("Rummet målas redan. Du kan stänga och fortsätta använda appen.",
+                  systemImage: "paintbrush")
+                .foregroundStyle(.secondary)
+        } else if let missing {
+            Label(missing, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        } else {
+            Text("Bakningen sköter sig själv. Du kan stänga appen under tiden — "
+                 + "rummet är målat nästa gång du öppnar det.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -144,12 +134,12 @@ struct BakeRoomView: View {
         return url
     }
 
+    /// Lämnar över till kön och stänger. Det finns inget mer att titta på här:
+    /// resten syns i rumsvyn, som går att lämna.
     private func start() {
         guard let server else { return }
-        Task {
-            await model.bake(room, in: store, server: server,
-                             colorSource: .init(rawValue: colorSource) ?? .blend)
-            if case .done = model.phase { onFinished() }
-        }
+        queue.bake(room, in: store, server: server,
+                   colorSource: .init(rawValue: colorSource) ?? .blend)
+        dismiss()
     }
 }

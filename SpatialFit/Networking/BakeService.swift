@@ -8,11 +8,23 @@
 //  här klienten frågar efter tillståndet med jämna mellanrum — en anslutning som
 //  står öppen i tio minuter överlever varken mobilnät eller att skärmen släcks.
 //
+//  Av samma skäl är starten och hämtningen skilda anrop. Jobbet lever på servern,
+//  inte i telefonen: kunden ska kunna lägga undan appen medan rummet målas, och
+//  ett id på disk räcker för att hitta tillbaka till samma bakning.
+//
 //  Resultatet hämtas som två raka nedladdningar. iOS kan packa ihop en mapp utan
 //  beroenden, men inte packa upp en.
 //
 
 import Foundation
+
+/// En bakning som ligger och går på en server. Sparas hos rummet, så att appen
+/// kan avslutas och ändå hitta tillbaka till jobbet i stället för att börja om.
+struct PendingBake: Codable, Sendable, Equatable {
+    let job: String
+    let server: URL
+    let startedAt: Date
+}
 
 struct BakeService: Sendable {
 
@@ -40,7 +52,12 @@ struct BakeService: Sendable {
         /// Andelen av ytan som minst ett foto såg. Resten är utfylld grå.
         let seenFraction: Double
         let triangleCount: Int
+        /// Om servern också tränade fram en splat att titta på.
+        let hasSplat: Bool
     }
+
+    /// Splatten på disk, bredvid den bakade meshen.
+    static let splatFilename = "splat.ply"
 
     enum Failure: LocalizedError {
         case noSurface
@@ -62,24 +79,28 @@ struct BakeService: Sendable {
         }
     }
 
-    /// Hur länge vi väntar innan vi ger upp. Ett rum på en halv miljon trianglar
-    /// tar några minuter; tar det längre är något fel med servern.
-    private static let deadline: Duration = .seconds(900)
+    /// Hur länge vi väntar innan vi ger upp. Att blanda fotona tar en dryg minut,
+    /// men att träna en splat tar en kvart — tiden måste rymma den långsammare.
+    private static let deadline: Duration = .seconds(3600)
     private static let pollInterval: Duration = .seconds(2)
 
-    /// Packar `files`, laddar upp dem och skriver `baked.mesh` och `baked.png`
-    /// i `destination`. `report` får jobbets tillstånd så vyn kan visa det.
-    @discardableResult
-    func bake(uploading files: [URL],
-              into destination: URL,
-              colorSource: ColorSource = .blend,
-              report: @Sendable (String) -> Void = { _ in }) async throws -> Summary {
+    /// Packar `files` och laddar upp dem. Svarar när servern tagit emot jobbet,
+    /// inte när det är klart: bakningen fortsätter där oavsett vad telefonen gör.
+    func start(uploading files: [URL],
+               colorSource: ColorSource = .blend) async throws -> String {
         let archive = try Self.archive(files)
         defer { try? FileManager.default.removeItem(at: archive.deletingLastPathComponent()) }
 
-        report("Laddar upp skanningen…")
-        let job = try await start(archive, colorSource: colorSource)
+        return try await upload(archive, colorSource: colorSource)
+    }
 
+    /// Väntar ut ett jobb som redan är igång och skriver `baked.mesh`,
+    /// `baked.png` och eventuell `splat.ply` i `destination`. `report` får
+    /// tillståndet så vyn kan visa det.
+    @discardableResult
+    func collect(_ job: String,
+                 into destination: URL,
+                 report: @Sendable (String) -> Void = { _ in }) async throws -> Summary {
         report("Servern bakar rummet…")
         let summary = try await wait(for: job)
 
@@ -88,12 +109,20 @@ struct BakeService: Sendable {
                            to: destination.appending(path: TexturedMesh.meshFilename))
         try await download("texture", of: job,
                            to: destination.appending(path: TexturedMesh.textureFilename))
+
+        // Splatten är hundratals megabyte och kommer sist. Meshen är det som
+        // rummet mäts och visas med om nedladdningen bryts på vägen.
+        if summary.hasSplat {
+            report("Hämtar splatten…")
+            try await download("splat", of: job,
+                               to: destination.appending(path: Self.splatFilename))
+        }
         return summary
     }
 
     // MARK: - Stegen
 
-    private func start(_ archive: URL, colorSource: ColorSource) async throws -> String {
+    private func upload(_ archive: URL, colorSource: ColorSource) async throws -> String {
         let boundary = "spatialfit.\(UUID().uuidString)"
         var request = URLRequest(url: server.appending(path: "bake"))
         request.httpMethod = "POST"
@@ -126,7 +155,8 @@ struct BakeService: Sendable {
             switch status.status {
             case "done":
                 return Summary(seenFraction: status.seenFraction,
-                               triangleCount: status.triangleCount)
+                               triangleCount: status.triangleCount,
+                               hasSplat: status.hasSplat)
             case "failed":
                 throw Failure.server(status.detail)
             default:
@@ -236,6 +266,7 @@ struct BakeService: Sendable {
         let detail: String
         let seenFraction: Double
         let triangleCount: Int
+        let hasSplat: Bool
     }
 
     private struct ServerError: Decodable {
