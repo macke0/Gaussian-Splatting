@@ -1,10 +1,22 @@
-"""Färgen till atlasen: varje texel vägs ihop ur alla bilder som såg den.
+"""Färgen till atlasen: varje texel vägs ihop ur de bilder som såg den bäst.
 
 Appens texturering låter varje triangel välja ett enda foto. Det ger full
 upplösning men också en synlig skarv där två foton möts, eftersom de togs med
-olika exponering. Här blandas bilderna i stället per texel, viktat efter hur
-rakt på och hur nära kameran stod. En texel som två bilder såg lika bra får
-medelvärdet, och skarven blir en övergång i stället för ett hopp.
+olika exponering. Här blandas bilderna i stället per texel, och skarven blir en
+övergång i stället för ett hopp.
+
+Vad som får vara med i blandningen avgör skärpan. Vägs bara geometrin — hur
+rakt på och hur nära kameran stod — hamnar ett rörelseoskarpt foto taget rakt
+på framför ett skarpt taget lite snett, och medelvärdet blir suddigt utan att
+någon enskild bild är dålig. Mätt på ett riktigt rum: 3,9 foton per texel gav
+kontrasten 1,95, medan samma rum målat ur enbart varje texels bästa foto gav
+2,67. Skärpan fanns alltså i materialet, blandningen kastade bort den.
+
+Två grepp hämtar hem den. Fotots egen kontrast går in i vikten, så ett suddigt
+foto väger mindre överallt, och bara foton som når upp till en andel av texelns
+bästa vikt får vara med. Kvar blir ungefär två bilder per texel — nog för att
+mjuka upp exponeringsskarvarna, få nog för att inte smeta. Samma rum landar då
+på 2,76 med oförändrad täckning.
 
 Kraven på en bild är desamma som i ``Texturing/ViewSelection.swift`` — vänd mot
 kameran, inom räckhåll och inte skymd — men de tillämpas per texel i stället för
@@ -28,6 +40,13 @@ MAXIMUM_DISTANCE_M = 4.5
 OCCLUSION_TOLERANCE_M = 0.12
 #: Grått för det ingen bild såg. Samma ton som den omålade mesh:en i appen.
 UNSEEN_COLOR = np.array([199, 199, 199], np.float32)
+#: Ett fotos vikt skalas med (dess kontrast / medianens) upphöjt till detta.
+#: Kvadraten valdes för att den slår igenom på de verkligt suddiga bilderna —
+#: spannet i en handhållen skanning är fyrfaldigt — utan att stänga ute dem.
+SHARPNESS_POWER = 2.0
+#: Ett foto måste väga minst så här stor andel av texelns bästa foto för att få
+#: vara med. Lägre smetar, högre närmar sig ett foto per texel och ger sömmar.
+BLEND_THRESHOLD = 0.7
 
 
 @dataclass
@@ -39,15 +58,35 @@ class BakeResult:
 
 def bake(atlas: Atlas, keyframes: list[Keyframe]) -> BakeResult:
     texel_count = len(atlas.texel_positions)
+    scales = _sharpness_scales(keyframes)
+
+    # Två svep över bilderna. Tröskeln är relativ till texelns bästa foto, och
+    # det bästa är inte känt förrän alla bilder är sedda. Bidragen räknas om i
+    # stället för att sparas — allt på en gång är fyrtio bilder gånger miljontals
+    # texlar, och minnet är den knappare resursen av de två.
+    best = np.zeros(texel_count, np.float32)
+    for keyframe in keyframes:
+        result = _contribution(atlas, keyframe, scales[keyframe.id])
+        if result is None:
+            continue
+        _, weights, visible = result
+        best[visible] = np.maximum(best[visible], weights)
+    best *= BLEND_THRESHOLD
+
     total = np.zeros((texel_count, 3), np.float32)
     weight = np.zeros(texel_count, np.float32)
-
     for keyframe in keyframes:
-        contribution, mask = _contribution(atlas, keyframe)
-        if contribution is None:
+        result = _contribution(atlas, keyframe, scales[keyframe.id])
+        if result is None:
             continue
-        total[mask] += contribution[0]
-        weight[mask] += contribution[1]
+        samples, weights, visible = result
+        keep = weights >= best[visible]
+        if not keep.any():
+            continue
+        texels = np.flatnonzero(visible)[keep]
+        kept = weights[keep]
+        total[texels] += samples[keep] * kept[:, None]
+        weight[texels] += kept
 
     seen = weight > 0
     colors = np.tile(UNSEEN_COLOR, (texel_count, 1))
@@ -66,8 +105,30 @@ def bake(atlas: Atlas, keyframes: list[Keyframe]) -> BakeResult:
     return BakeResult(texture=texture, seen_fraction=fraction)
 
 
-def _contribution(atlas: Atlas, keyframe: Keyframe):
-    """Färg och vikt från en bild, för de texlar den faktiskt såg."""
+def _sharpness_scales(keyframes: list[Keyframe]) -> dict[int, float]:
+    """Hur skarpt varje foto är, mätt mot de andra i samma skanning.
+
+    Måttet är medelskillnaden mellan grannpixlar. Rörelseoskärpa jämnar ut den,
+    och den som skannar går ju medan bilden tas. Absolutnivån säger inget — ett
+    rum med vita väggar har låg kontrast överallt — så värdena normeras mot
+    medianen i just den här skanningen.
+    """
+    contrasts = {}
+    for keyframe in keyframes:
+        grey = keyframe.image.astype(np.float32).mean(axis=2)
+        contrasts[keyframe.id] = float(
+            (np.abs(np.diff(grey, axis=0)).mean()
+             + np.abs(np.diff(grey, axis=1)).mean()) / 2)
+
+    reference = float(np.median(list(contrasts.values()))) if contrasts else 0.0
+    if reference <= 0:
+        return {identifier: 1.0 for identifier in contrasts}
+    return {identifier: (value / reference) ** SHARPNESS_POWER
+            for identifier, value in contrasts.items()}
+
+
+def _contribution(atlas: Atlas, keyframe: Keyframe, sharpness: float):
+    """Färgprov, vikt och mask för de texlar bilden faktiskt såg."""
     pixels, depth = keyframe.project(atlas.texel_positions)
     width, height = float(keyframe.image_size[0]), float(keyframe.image_size[1])
 
@@ -75,7 +136,7 @@ def _contribution(atlas: Atlas, keyframe: Keyframe):
                & (pixels[:, 0] >= 0) & (pixels[:, 0] < width)
                & (pixels[:, 1] >= 0) & (pixels[:, 1] < height))
     if not visible.any():
-        return None, None
+        return None
 
     to_camera = keyframe.position - atlas.texel_positions
     distance = np.linalg.norm(to_camera, axis=1)
@@ -90,16 +151,16 @@ def _contribution(atlas: Atlas, keyframe: Keyframe):
         visible &= _unoccluded(keyframe, pixels, depth, visible)
 
     if not visible.any():
-        return None, None
+        return None
 
     rows = np.clip(pixels[visible, 1].astype(np.int32), 0, keyframe.image.shape[0] - 1)
     columns = np.clip(pixels[visible, 0].astype(np.int32), 0, keyframe.image.shape[1] - 1)
     samples = keyframe.image[rows, columns].astype(np.float32)
 
     # Rakt på och nära väger tyngst. Kvadraten gör övergången mellan två
-    # bilder mjukare än en rak proportion.
-    weights = (facing[visible] ** 2) / np.maximum(distance[visible], 0.1)
-    return (samples * weights[:, None], weights), visible
+    # bilder mjukare än en rak proportion. Skärpan skalar hela bilden lika.
+    weights = sharpness * (facing[visible] ** 2) / np.maximum(distance[visible], 0.1)
+    return samples, weights, visible
 
 
 def _unoccluded(keyframe: Keyframe, pixels: np.ndarray, depth: np.ndarray,
