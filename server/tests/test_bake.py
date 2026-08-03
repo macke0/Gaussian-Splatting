@@ -14,7 +14,7 @@ import pytest
 from PIL import Image
 
 from spatialfit_server import atlas as atlas_module
-from spatialfit_server.bake import UNSEEN_COLOR, bake
+from spatialfit_server.bake import UNSEEN_COLOR, _exposures, bake
 from spatialfit_server.bundle import Keyframe, ScanBundle
 from spatialfit_server.mesh import FormatError, SceneMesh, TexturedMesh
 
@@ -46,6 +46,14 @@ def camera_looking_at_wall(color: tuple[int, int, int], distance: float = 2.0,
                     depth_size=np.array([0, 0], np.int32),
                     image=image,
                     depth=None)
+
+
+def textured_image(size: int = 256) -> np.ndarray:
+    """En bild med mönster. En enfärgad duger inte att jämka exponering mot —
+    utan variation går det inte att skilja förstärkning från nivå."""
+    ramp = np.linspace(30, 220, size, dtype=np.float32)
+    field = ramp[None, :] + ramp[:, None] / 2
+    return np.repeat(np.clip(field, 0, 255)[:, :, None], 3, axis=2).astype(np.uint8)
 
 
 def unwrapped_wall(size: int = 64) -> atlas_module.Atlas:
@@ -102,12 +110,59 @@ class TestBakning:
         painted = result.texture[atlas.texel_rows, atlas.texel_columns]
         assert np.allclose(painted, UNSEEN_COLOR, atol=1)
 
+    def test_enstaka_omalade_texlar_fylls_av_sina_grannar(self):
+        """LiDAR:ns brus får enstaka texlar att falla på djuptestet mitt i en
+        väl fotograferad yta. Lämnas de omålade blir ytan prickig, vilket i 3D
+        ser ut som slumpade färger snarare än som hål."""
+        atlas = unwrapped_wall()
+        keyframe = camera_looking_at_wall((200, 60, 40))
+        # Ett hål mitt i bilden: djupet påstår att något står halvvägs fram.
+        keyframe.depth = np.full((64, 64), 9.0, np.float32)
+        keyframe.depth[30:33, 30:33] = 1.0
+        keyframe.depth_size = np.array([64, 64], np.int32)
+
+        result = bake(atlas, [keyframe])
+        assert result.seen_fraction < 1.0
+
+        painted = result.texture[atlas.texel_rows, atlas.texel_columns]
+        assert np.allclose(painted, [200, 60, 40], atol=6)
+
     def test_utan_bilder_blir_rummet_grat_men_inte_trasigt(self):
         atlas = unwrapped_wall()
         result = bake(atlas, [])
 
         assert result.seen_fraction == 0
         assert result.texture.shape == (atlas.size, atlas.size, 3)
+
+    def test_ett_morkare_foto_jamkas_mot_de_andra(self):
+        """Kameran reglerar exponering medan man går. Två bilder på samma vägg
+        kan vara överens om mönstret men inte om nivån, och då fläckar
+        blandningen. Här är den ena bilden halva ljusstyrkan; jämkningen ska
+        hitta faktorn två mellan dem."""
+        atlas = unwrapped_wall()
+        bright = camera_looking_at_wall((0, 0, 0), identifier=0)
+        bright.image = textured_image()
+        dark = camera_looking_at_wall((0, 0, 0), identifier=1)
+        dark.image = (textured_image() * 0.5).astype(np.uint8)
+
+        exposures = _exposures(atlas, [bright, dark],
+                               {0: 1.0, 1: 1.0})
+        ratio = exposures[1][0].mean() / exposures[0][0].mean()
+        assert ratio == pytest.approx(2.0, rel=0.1)
+
+    def test_jamkningen_gor_inte_rummet_morkare(self):
+        """En gemensam nedskalning får fotona att avvika mindre från varandra
+        utan att göra dem mer överens. Anpassningen ska inte få välja den vägen."""
+        atlas = unwrapped_wall()
+        keyframes = []
+        for identifier, factor in enumerate([1.0, 0.6, 0.8]):
+            keyframe = camera_looking_at_wall((0, 0, 0), identifier=identifier)
+            keyframe.image = (textured_image() * factor).astype(np.uint8)
+            keyframes.append(keyframe)
+
+        exposures = _exposures(atlas, keyframes, {0: 1.0, 1: 1.0, 2: 1.0})
+        average = np.mean([gain for gain, _ in exposures.values()])
+        assert average == pytest.approx(1.0, rel=0.01)
 
     def test_djupkartan_stoppar_farg_pa_nagot_som_lag_bakom(self):
         atlas = unwrapped_wall()

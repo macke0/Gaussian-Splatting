@@ -27,8 +27,10 @@ from .mesh import TexturedMesh
 
 log = logging.getLogger(__name__)
 
-#: Atlasens sida i texlar. 2048² räcker för ett rum fotograferat på 768 px.
-DEFAULT_ATLAS_SIZE = 2048
+#: Atlasens sida i texlar. Följer fotonas bredd i ``KeyframeRecorder``: ett rum
+#: fotograferat på 1536 px bär ungefär 1,8 mm per pixel, och 4096² lägger en
+#: texel lika tätt. En mindre atlas kastar bort detaljen fotona redan har.
+DEFAULT_ATLAS_SIZE = 4096
 #: Trianglar kvar efter utglesning. LiDAR ger gärna en halv miljon, vilket
 #: varken atlasen eller telefonens renderare har någon nytta av.
 DEFAULT_TARGET_FACES = 120_000

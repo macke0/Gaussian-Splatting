@@ -28,9 +28,11 @@ final class KeyframeRecorder {
 
     private let directory: URL
     private let maximumCount: Int
-    /// Bredd i pixlar på den sparade bilden. Full sensorupplösning ger inte
-    /// bättre textur än vad mesh:ens triangelstorlek klarar av att visa.
-    private let targetWidth: CGFloat = 768
+    /// Bredd i pixlar på den sparade bilden. Ska följa atlasens upplösning:
+    /// vid 1536 px täcker en fotopixel ungefär 1,8 mm av väggen, vilket är vad
+    /// en texel i en atlas på 4096 också gör. Höjs bara den ena blir den grövre
+    /// av dem taket ändå, och den finare bara dyrare.
+    private let targetWidth: CGFloat = 1536
 
     /// Hur mycket sämre än de tidigare bilderna en bild får vara och ändå
     /// sparas. Vid 0.75 släpps normalt brus igenom men inte en tydlig sudd.
