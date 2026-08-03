@@ -49,6 +49,13 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     /// dessförinnan växer den fortfarande.
     private(set) var sceneMesh = SceneMesh()
 
+    /// Trianglar rekonstruktionen byggt hittills. Räknas medan skanningen pågår,
+    /// för står den kvar på noll är scenrekonstruktionen inte igång — och det
+    /// ska synas medan kunden fortfarande står i rummet, inte när rummet ska
+    /// målas en timme senare. Bara antalet läses, ingen geometri kopieras.
+    private(set) var liveTriangleCount = 0
+    @ObservationIgnored private var meshWatch: Timer?
+
     override init() {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "scan-\(UUID().uuidString)")
@@ -85,6 +92,19 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
 
         // Fotona hämtas ur samma session, utan att dess delegat tas över.
         recorder.start(session: arSession)
+
+        // Samma skäl här: sessionens delegat tillhör RoomPlan, så anchors
+        // pollas i stället för att prenumereras på.
+        meshWatch?.invalidate()
+        meshWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.countTriangles() }
+        }
+    }
+
+    private func countTriangles() {
+        liveTriangleCount = (arSession.currentFrame?.anchors ?? [])
+            .compactMap { $0 as? ARMeshAnchor }
+            .reduce(0) { $0 + $1.geometry.faces.count }
     }
 
     /// Det RoomPlan behöver — djup och släta djupkartor — plus scenrekonstruktion.
@@ -108,6 +128,8 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         guard case .scanning = phase, let captureView else { return }
         phase = .processing
         recorder.stop()
+        meshWatch?.invalidate()
+        meshWatch = nil
         // Måste läsas innan sessionen stoppas — sedan är anchors borta.
         sceneMesh = SceneMeshRecorder.snapshot(of: arSession)
         captureView.captureSession.stop()
@@ -116,6 +138,8 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     /// Avbryt utan att efterbehandla.
     func cancel() {
         recorder.stop()
+        meshWatch?.invalidate()
+        meshWatch = nil
         captureView?.captureSession.stop(pauseARSession: true)
         try? FileManager.default.removeItem(at: photoDirectory)
     }

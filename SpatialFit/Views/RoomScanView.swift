@@ -76,14 +76,27 @@ struct RoomScanView: View {
     }
 
     private var scanningHint: some View {
-        Text("Gå långsamt runt rummet. Kameran fotograferar samtidigt, så håll väggar och möbler väl belysta i bild.")
-            .font(.footnote)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial, in: Capsule())
-            .padding(.horizontal, 24)
-            .padding(.bottom, 24)
+        VStack(spacing: 8) {
+            Text("Gå långsamt runt rummet. Kameran fotograferar samtidigt, så håll väggar och möbler väl belysta i bild.")
+                .multilineTextAlignment(.center)
+
+            // Står siffran kvar på noll efter några steg är scenrekonstruktionen
+            // inte igång, och rummet blir lådor. Det är bättre att veta här än
+            // vid bakningen.
+            Label(scan.liveTriangleCount == 0
+                    ? "Ingen yta ännu"
+                    : "\(scan.liveTriangleCount) trianglar uppmätta",
+                  systemImage: scan.liveTriangleCount == 0
+                    ? "exclamationmark.triangle"
+                    : "checkmark.circle")
+                .foregroundStyle(scan.liveTriangleCount == 0 ? .orange : .green)
+        }
+        .font(.footnote)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 24)
+        .padding(.bottom, 24)
     }
 
     private func summary(captured: CapturedRoom, niches: [ScannedNiche]) -> some View {
