@@ -288,7 +288,9 @@
 				DEVELOPMENT_TEAM = YUQM892J2M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Kameran används för att mäta upp nischen med LiDAR.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rummet skickas till bakningsservern i butikens nätverk.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -317,7 +319,9 @@
 				DEVELOPMENT_TEAM = YUQM892J2M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Kameran används för att mäta upp nischen med LiDAR.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Rummet skickas till bakningsservern i butikens nätverk.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

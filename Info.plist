@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Resten av Info.plist genereras ur byggflaggorna (INFOPLIST_KEY_*).
+	     Den här filen finns för nycklar som är ordböcker, vilket flaggorna
+	     inte kan uttrycka. Xcode slår ihop de två. -->
+
+	<!-- Bakningsservern är en dator i butiken, utan certifikat och utan
+	     domännamn — kunden skriver in en IP-adress. Något TLS finns det
+	     alltså inget att lita på, och undantaget kan inte begränsas till
+	     en känd värd eftersom adressen är olika hos varje kedja.
+
+	     Detta är medvetet lågt satt för prototypen. Innan appen går till
+	     App Store måste servern få ett certifikat och undantaget bytas mot
+	     NSExceptionDomains för just den värden. Mätdata går aldrig den här
+	     vägen; det som skickas är rummets yta och foton. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
