@@ -20,6 +20,9 @@ import SwiftUI
 struct SplatRoomView: UIViewRepresentable {
 
     let url: URL
+    /// Punkten kameran kretsar kring: helst där fotografen stod. Utan den
+    /// används mitten av splattens låda, som kan ligga inne i en möbel.
+    let standingAt: SIMD3<Float>?
     @Binding var yaw: Float
     @Binding var pitch: Float
     @Binding var distance: Float
@@ -36,7 +39,7 @@ struct SplatRoomView: UIViewRepresentable {
         view.isOpaque = false
         view.delegate = context.coordinator
 
-        context.coordinator.start(in: view, url: url, onLoad: onLoad)
+        context.coordinator.start(in: view, url: url, standingAt: standingAt, onLoad: onLoad)
         return view
     }
 
@@ -74,7 +77,10 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     private var queue: MTLCommandQueue?
     private var drawableSize: CGSize = .zero
 
+    /// Punkten kameran kretsar kring. Är fotografens medelpunkt känd står den
+    /// fast; annars vandrar den med lådan medan filen läses.
     private var center = SIMD3<Float>(repeating: 0)
+    private var anchored = false
     private var lowest: SIMD3<Float>?
     private var highest: SIMD3<Float>?
     private var yaw: Float = 0
@@ -107,9 +113,15 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     /// tråd klumparna och huvudtråden får dem färdiga.
     func start(in view: MTKView,
                url: URL,
+               standingAt viewpoint: SIMD3<Float>?,
                onLoad: @escaping @MainActor (Result<Int, Error>) -> Void) {
         guard let device = view.device else { return }
         queue = device.makeCommandQueue()
+
+        if let viewpoint {
+            center = viewpoint
+            anchored = true
+        }
 
         let colorFormat = view.colorPixelFormat
         let depthFormat = view.depthStencilPixelFormat
@@ -189,7 +201,7 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
 
     // MARK: - Kameran
 
-    /// Kameran kretsar kring rummets mitt, samma bana som `RoomSceneController`
+    /// Kameran kretsar kring `center`, samma bana som `RoomSceneController`
     /// — men stannar innanför väggarna. Se `reach`.
     private var viewMatrix: simd_float4x4 {
         let direction = SIMD3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw))
@@ -228,7 +240,7 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
         let high = simd_max(highest ?? box.1, box.1)
         lowest = low
         highest = high
-        center = (low + high) / 2
+        if !anchored { center = (low + high) / 2 }
     }
 
     private static func look(from eye: SIMD3<Float>,

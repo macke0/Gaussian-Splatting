@@ -34,13 +34,14 @@ detalj: ARKit lämnar flagor som svävar fritt mitt i rummet, och en gaussare p�
 en flaga är brus som regeln ovan aldrig kan komma åt, för den sitter ju på
 "ytan". Bakningen kastade flagorna redan; splatten sådde på dem.
 
-**De startar som skivor, inte som klot — men får aldrig bli rakblad.** En vägg
+**De startar som skivor, inte som klot, och skivan ska få vara tunn.** En vägg
 beskrivs bäst av något platt som ligger an mot den. Vanlig 3DGS börjar med klot
 för att den inte vet var ytan är; vi vet, och ger dem ytans normal och en tunn
-tredje axel från början. ``MINIMUM_ASPECT`` sätter samtidigt en undre gräns för
-hur avlång en gaussare får bli, för annars är nästa steg efter skivan nålen: en
-nål syns inte alls från fotot den passades mot och som ett streck från alla
-andra håll. Rummet ska gå att titta runt i, inte bara att stå still i.
+tredje axel från början. Mätt på ett riktigt rum blir den mellersta axeln
+fjorton gånger den minsta — en halv millimeter tvärs väggen. Ett golv under
+den kvoten gör skivorna åtta gånger tjockare och bilden mjölkig, så frestas
+man att sätta ett: mät ``max/mid`` och ``mid/min`` var för sig. ``max/min``
+kan inte skilja en nål från en skiva.
 
 **Poserna får glida, men bara för bildens skull.** De kommer från ARKit och
 duger till att mäta med. Till att *måla* med gör de det inte: reprojektionsfelet
@@ -179,16 +180,6 @@ MAXIMUM_DRIFT = 0.02
 #: KD-trädet kostar en halv sekund för hela budgeten.
 SURFACE_INTERVAL = 250
 
-#: Hur avlång en gaussare får bli: minsta axeln delat med den största. Utan
-#: gränsen växer den till ett rakblad — osynligt från fotot den passades mot,
-#: eftersom den ses på högkant, men ett lysande streck så fort kameran flyttar
-#: sig någon decimeter. Det är de strecken som gör rummet obrukbart att titta
-#: runt i, och de kostar ingenting att träna fram: ett rakblad kan lägga sig
-#: exakt längs en kant i ett enda foto.
-#:
-#: Taket ligger i logaritmen, där skalorna bor, så gränsen blir ett tillägg.
-MINIMUM_ASPECT = 0.1
-
 #: Hur tunn en startgaussare är tvärs ytan, som andel av avståndet till grannen.
 #: En vägg beskrivs av skivor, inte av klot: ett klot med radien r suddar över r
 #: åt alla håll, medan en skiva bara suddar längs väggen där färgen ändå är lik.
@@ -319,11 +310,6 @@ def train(bundle: ScanBundle,
         with torch.no_grad():
             parameters["colors"].clamp_(0.0, 1.0)
             parameters["scales"].clamp_(max=float(np.log(MAXIMUM_RADIUS)))
-            # Ingen axel får bli en bråkdel av den längsta. Skalorna är
-            # logaritmer, så förhållandet är en summa och golvet ett tillägg.
-            parameters["scales"].clamp_(
-                min=parameters["scales"].max(dim=1, keepdim=True).values
-                + float(np.log(MINIMUM_ASPECT)))
             if step % SURFACE_INTERVAL == 0 or step == iterations - 1:
                 moved, pulled = _pulled_to_surface(
                     parameters["means"].detach().cpu().numpy(), tree, surface)

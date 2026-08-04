@@ -59,7 +59,8 @@ struct RoomViewerView: View {
             } else {
                 Group {
                     if let splat, showsSplat {
-                        SplatRoomView(url: splat, yaw: $yaw, pitch: $pitch, distance: $distance) { result in
+                        SplatRoomView(url: splat, standingAt: viewpoint,
+                                      yaw: $yaw, pitch: $pitch, distance: $distance) { result in
                             if case .failure = result {
                                 // Meshen finns kvar och duger. Att falla tillbaka
                                 // tyst är fel — vyn ska säga vad du tittar på.
@@ -252,6 +253,25 @@ struct RoomViewerView: View {
         // bakade ytan är mätt mot fotona och återger rummet — se `Texturing/`.
         // Hellre grå form än en bild som ljuger om vad som gick fel.
         status = .plainOnly("Rummet är inte bakat. Tryck Baka rummet för att måla det med dina foton.")
+    }
+
+    /// Punkten splatvyn kretsar kring: medelpunkten för de foton den tränats på.
+    ///
+    /// Mitten av splattens låda duger inte. Den är ett medelvärde av väggarna,
+    /// och i ett rum som inte är rätblockigt hamnar den var som helst — uppmätt
+    /// på användarens rum 18 cm från närmaste yta, alltså inne i en möbel. Där
+    /// står kameran och tittar rakt in i något på decimeterhåll.
+    ///
+    /// Fotografens egen medelpunkt är fri luft per definition: någon har gått
+    /// där. Samma rum, 75 cm till närmaste gaussare.
+    private var viewpoint: SIMD3<Float>? {
+        let eyes = store.keyframes(for: room).map { keyframe in
+            SIMD3(keyframe.worldFromCamera.columns.3.x,
+                  keyframe.worldFromCamera.columns.3.y,
+                  keyframe.worldFromCamera.columns.3.z)
+        }
+        guard !eyes.isEmpty else { return nil }
+        return eyes.reduce(.zero, +) / Float(eyes.count)
     }
 
     /// Den täta LiDAR-ytan först: den har möblernas verkliga former. RoomPlans
