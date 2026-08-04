@@ -50,7 +50,17 @@ vägg. Tränar man en splat mot foton som är oense på den nivån blir resultat
 medelvärde av dem — suddigt, hur många gaussare och steg man än lägger på.
 ``refine_poses`` låter därför varje kamera justera sig några millimeter. Den
 justeringen stannar i träningen och skrivs aldrig tillbaka till skanningen; det
-som mäts kommer fortfarande från ARKits egna poser.
+som mäts kommer fortfarande från ARKits egna poser. "Några millimeter" är en
+avsikt som måste hållas efter — se ``POSE_LEARNING_RATE``.
+
+**Fotona är inte överens om hur ljust rummet är.** ARKit ställer exponering och
+vitbalans automatiskt medan man går, och det ljusaste fotot i ett riktigt rum
+visade sig vara 2,3 gånger det mörkaste. Ett 3DGS har ingen väg att uttrycka
+"samma vägg, annan exponering" — den lägger sig mitt emellan, vilket är exakt
+den platta, urtvättade bilden användaren såg, och vitbalansen blir färgfläckar
+på vita ytor. ``adapt_appearance`` ger därför varje foto sex tal som förklarar
+bort dess egen ton, så att gaussarna slipper göra det med sin färg. Det som
+renderas ut bär rummets gemensamma ton, inte ett medelvärde av kamerans nycker.
 
 **Förlusten är inte bara L1.** Ett pixelavstånd är nöjt med ett medelvärde: två
 foton som är oense om var väggen ligger får sin lägsta L1 av något suddigt
@@ -137,7 +147,33 @@ INITIAL_OPACITY = 0.1
 
 #: Kamerornas egen inlärningstakt. Låg med flit: felet vi rättar är centimeter,
 #: inte meter, och en lös kamera hittar hellre en vacker lögn än rummet.
-POSE_LEARNING_RATE = 1e-4
+#:
+#: Stod på 1e-4 utan koppel, och då gick det precis så illa: uppmätt på det
+#: riktiga rummet flyttade kamerorna sig 44 mm i median och 179 mm som mest —
+#: alltså mer än det reprojektionsfel på 2–3 cm de skulle rätta. Adam tar ungefär
+#: ett steg av storleken ``lr`` oavsett hur liten gradienten är, så över 30 000
+#: steg fanns ingen övre gräns alls. gsplats eget referensskript kör 1e-5 med
+#: ``weight_decay`` 1e-6, och det är rätt: takten sätter hur långt kameran KAN
+#: gå, avklingningen drar den tillbaka mot ARKits pose när bilden inte tjänar på
+#: att den flyttar sig.
+POSE_LEARNING_RATE = 1e-5
+POSE_DECAY = 1e-6
+
+#: Fotona är tagna med ARKits automatik, och den justerar sig medan man går.
+#: Uppmätt på användarens rum: ljusaste fotot är 2,30 gånger det mörkaste,
+#: blåkanalen mot den gröna svänger 0,71–1,01, och mellan två foton i följd
+#: hoppar ljuset 53 grånivåer som mest. En modell som tränas mot foton som är så
+#: oense om rummets ton kan inte göra annat än att lägga sig mitt emellan: det
+#: ensamt ger L1 0,068 av de 0,121 vi mätte på undanhållna foton, alltså mer än
+#: hälften av hela felet. Det syns som en platt, urtvättad bild, och vitbalansen
+#: syns som färgfläckar på vita ytor där olika foton råkat dominera.
+#:
+#: Därför får varje foto en egen förstärkning och nollpunkt per kanal, som lärs
+#: samtidigt med bilden. Sex tal per foto — de kan inte hitta på detaljer, bara
+#: förklara bort exponeringen, så gaussarna slipper göra det med sin färg.
+#: Rättelsen stannar i träningen: det som renderas ut har rummets gemensamma ton.
+APPEARANCE_LEARNING_RATE = 1e-3
+APPEARANCE_DECAY = 1e-6
 
 #: Hur mycket av förlusten som är strukturlikhet i stället för pixelavstånd.
 #: Samma vikt som 3DGS-artikeln använder.
@@ -194,6 +230,7 @@ def train(bundle: ScanBundle,
           max_splats: int = DEFAULT_MAX_SPLATS,
           densify: bool = True,
           refine_poses: bool = True,
+          adapt_appearance: bool = True,
           budget: int = PHONE_SPLAT_BUDGET) -> SplatModel:
     """Passar gaussare mot fotona. Kräver CUDA.
 
@@ -267,7 +304,17 @@ def train(bundle: ScanBundle,
     pose_optimizer = None
     if refine_poses:
         deltas = torch.nn.Parameter(torch.zeros(len(views), 6, device=device))
-        pose_optimizer = torch.optim.Adam([deltas], lr=POSE_LEARNING_RATE)
+        pose_optimizer = torch.optim.Adam([deltas], lr=POSE_LEARNING_RATE,
+                                          weight_decay=POSE_DECAY)
+
+    # Log-förstärkning och nollpunkt per kanal och foto. Noll i båda är ett
+    # oförändrat foto, vilket är där de börjar.
+    appearance = None
+    appearance_optimizer = None
+    if adapt_appearance:
+        appearance = torch.nn.Parameter(torch.zeros(len(views), 6, device=device))
+        appearance_optimizer = torch.optim.Adam([appearance], lr=APPEARANCE_LEARNING_RATE,
+                                                weight_decay=APPEARANCE_DECAY)
 
     pulled = 0
     for step in range(iterations):
@@ -275,6 +322,15 @@ def train(bundle: ScanBundle,
         view = views[index]
         viewmat = view["viewmat"] if deltas is None else _nudged(view["viewmat"], deltas[index])
         rendered, info = _rasterize(parameters, view, device, viewmat)
+        if appearance is not None:
+            # Minus medelvärdet över alla foton: bara SKILLNADER i ton får
+            # uttryckas här, aldrig en gemensam förskjutning. Annars är
+            # parametriseringen tvetydig — modellen kan bli en aning mörkare
+            # medan alla 120 rättelserna blir en aning ljusare, till samma
+            # förlust. Uppmätt utan ankaret drev tonen så mycket att felet mot
+            # ett foto rakt av växte från 0,121 till 0,137 fast rummet blev
+            # bättre. Det som renderas ut ska bära fotonas gemensamma ton.
+            rendered = _exposed(rendered, appearance[index] - appearance.mean(dim=0))
 
         loss = ((1 - SSIM_WEIGHT) * (rendered - view["image"]).abs().mean()
                 + SSIM_WEIGHT * (1 - _ssim(rendered, view["image"])))
@@ -291,12 +347,16 @@ def train(bundle: ScanBundle,
             optimizer.zero_grad(set_to_none=True)
         if pose_optimizer is not None:
             pose_optimizer.zero_grad(set_to_none=True)
+        if appearance_optimizer is not None:
+            appearance_optimizer.zero_grad(set_to_none=True)
         loss.backward()
 
         for optimizer in optimizers.values():
             optimizer.step()
         if pose_optimizer is not None:
             pose_optimizer.step()
+        if appearance_optimizer is not None:
+            appearance_optimizer.step()
 
         if strategy is not None:
             # Bruset som flyttar de slocknade gaussarna skalas med lägenas
@@ -319,6 +379,15 @@ def train(bundle: ScanBundle,
         if step % 500 == 0:
             log.info("steg %d/%d, förlust %.4f, %d gaussare, %d drog tillbaka",
                      step, iterations, float(loss.detach()), len(parameters["means"]), pulled)
+
+    if appearance is not None:
+        centred = appearance.detach() - appearance.detach().mean(dim=0)
+        gains = torch.exp(centred[:, :3]).cpu().numpy()
+        log.info("exponeringsrättelsen spänner %.2f–%.2f gånger, "
+                 "vitbalansen %.2f–%.2f i blått mot grönt",
+                 float(gains.mean(axis=1).min()), float(gains.mean(axis=1).max()),
+                 float((gains[:, 2] / gains[:, 1]).min()),
+                 float((gains[:, 2] / gains[:, 1]).max()))
 
     model = SplatModel(
         means=parameters["means"].detach().cpu().numpy(),
@@ -592,6 +661,19 @@ def _nudged(viewmat, delta):
     bottom = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=delta.device, dtype=delta.dtype)
     nudge = torch.cat([torch.cat([matrix, translation[:, None]], dim=1), bottom], dim=0)
     return (nudge @ viewmat[0])[None]
+
+
+def _exposed(image, terms):
+    """Bilden sedd genom ett visst fotos exponering och vitbalans.
+
+    Förstärkningen ligger som logaritm så att den är symmetrisk kring
+    oförändrat och aldrig kan bli negativ. Ingen klippning: målet ligger i
+    [0, 1] och förlusten håller kvar bilden där ändå, medan en klippning hade
+    dödat gradienten precis i de överexponerade fönster där rättelsen behövs.
+    """
+    import torch
+
+    return image * torch.exp(terms[:3]) + terms[3:]
 
 
 def _refined(frames: list[Keyframe], views: list[dict], deltas) -> np.ndarray:
