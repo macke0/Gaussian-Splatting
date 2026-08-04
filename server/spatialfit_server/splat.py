@@ -344,8 +344,9 @@ def train(bundle: ScanBundle,
             # bättre. Det som renderas ut ska bära fotonas gemensamma ton.
             rendered = _exposed(rendered, appearance[index] - appearance.mean(dim=0))
 
-        loss = ((1 - SSIM_WEIGHT) * (rendered - view["image"]).abs().mean()
-                + SSIM_WEIGHT * (1 - _ssim(rendered, view["image"])))
+        target = view["image"].float() / 255.0
+        loss = ((1 - SSIM_WEIGHT) * (rendered - target).abs().mean()
+                + SSIM_WEIGHT * (1 - _ssim(rendered, target)))
         if strategy is not None:
             # Med ett fast antal gaussare är det billigt att lägga sig som dimma
             # över hela rummet: många halvgenomskinliga klumpar sänker
@@ -736,7 +737,11 @@ def _view(frame: Keyframe, device: str, camera_from_world: np.ndarray | None = N
     return {
         "viewmat": torch.tensor(viewmat, device=device)[None],
         "K": torch.tensor(intrinsics, device=device)[None],
-        "image": torch.tensor(frame.image.astype(np.float32) / 255.0, device=device),
+        # Rå uint8 på kortet, omräknat till float först i det steg som råkar
+        # dra fotot. Alla foton ligger uppe samtidigt, så vid 300 keyframes är
+        # skillnaden 6,4 mot 1,6 GB — och omräkningen är gratis mot
+        # rasteriseringen.
+        "image": torch.tensor(frame.image, device=device),
         "intrinsics": intrinsics,
         "size": (width, height),
     }

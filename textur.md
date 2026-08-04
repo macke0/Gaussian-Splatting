@@ -99,6 +99,29 @@ Två saker måste vara rätt för att provet ska säga något:
   vill ha ett rått mål (`matchingTraining`); en främmande fil matas in orörd och
   vill ha `.bgra8Unorm_srgb`. Fel val ger en mörk och övermättad bild.
 
+## Fotobudgeten band, inte handen som skannade
+
+När renderaren väl var frikänd stod bara indatan kvar, och det första svaret var
+att be kunden skanna närmare och långsammare. Det var fel svar: kunden hade
+redan gjort det, och vi kastade bort skanningen.
+
+`KeyframeRecorder` pollar fem bildrutor i sekunden. Tre minuters skanning
+erbjuder alltså omkring niohundra tillfällen — vi behöll 120, och krävde 20 cm
+eller 12° mellan dem. Taket satt i vår kod.
+
+Det stämmer med det som redan var mätt: skärpan är gaussare per kvadratmeter,
+och antalet gaussare en yta får är antalet foton som ser den. Sexton grannfoton
+av ETT hörn ger 85 % av fotots skärpa; hundraåtta foton spridda över hela rummet
+ger 40 % med lika många gaussare. Inrias `train`, som renderas fotorealistiskt,
+har 301 foton av ett enda lok.
+
+Ändrat: budgeten 120 → 300, tröskeln 20 cm/12° → 12 cm/8°. Kostnaden är
+uppladdningen, knappt en halv megabyte per keyframe med djupet.
+
+Träningen höll alla foton som float32 på kortet, 21 MB styck — vid 300 blir det
+6,4 GB bara i foton. De ligger som uint8 nu och räknas om i det steg som drar
+dem: 1,6 GB, och omräkningen syns inte mot rasteriseringen.
+
 ## Radietaket är inte längre bindande
 
 Om av på hela rummet vid 2 M-budgeten, 30 000 steg, undanhållna foton:

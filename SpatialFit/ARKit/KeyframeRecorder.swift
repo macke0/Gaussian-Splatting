@@ -60,7 +60,18 @@ final class KeyframeRecorder {
     ///   rummet, mot fyra undanhållna foton: 9 foton ger felet 0,168, 18 ger
     ///   0,121 och 36 ger 0,102. Kurvan lutar fortfarande vid 36, alltså var
     ///   det taket som band — inte antalet gaussare, inte antalet steg.
-    init(directory: URL, maximumCount: Int = 120) {
+    ///
+    ///   Kurvan lutade vid 120 också. Skärpan är gaussare per kvadratmeter, och
+    ///   antalet gaussare en yta får är i sin tur antalet foton som ser den:
+    ///   sexton grannfoton av ETT hörn ger 85 % av fotots skärpa, medan hundraåtta
+    ///   foton spridda över hela rummet ger 40 % med lika många gaussare. Inrias
+    ///   `train`, som renderas fotorealistiskt i `BenchmarkSplatView`, har 301
+    ///   foton av ett enda lok.
+    ///
+    ///   Taket är alltså vårt, inte skanningens: vid fem bildrutor i sekunden
+    ///   erbjuder tre minuters skanning niohundra tillfällen. Kostnaden är
+    ///   uppladdningen — knappt en halv megabyte per keyframe med djupet.
+    init(directory: URL, maximumCount: Int = 300) {
         self.directory = directory
         self.maximumCount = maximumCount
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -105,23 +116,28 @@ final class KeyframeRecorder {
         return value >= median * sharpnessFloor
     }
 
-    /// 20 cm eller 12° från den senaste bilden. Under det ser man i praktiken
+    /// 12 cm eller 8° från den senaste bilden. Under det ser man i praktiken
     /// samma yta från samma håll.
     ///
     /// Låg på 30 cm och 20°, vilket räcker för att blanda färg men inte för att
     /// kunna vrida sig i splatten: mellan två foton som står 20° isär finns inga
     /// mellanliggande vyer att luta sig mot, och splatten fyller mellanrummet
-    /// med streck. Se `maximumCount` för mätningen.
+    /// med streck.
+    ///
+    /// Sedan på 20 cm och 12°, men då band `maximumCount` vid 120 och tröskeln
+    /// var aldrig den som avgjorde. Med budgeten på 300 är det tvärtom: tröskeln
+    /// är det som bestämmer hur tätt fotona kan ligga, och tätt är hela poängen
+    /// — se `maximumCount` för mätningen av vad grannfoton gör med skärpan.
     private func hasMovedEnough(to pose: simd_float4x4) -> Bool {
         guard let previous = keyframes.last?.worldFromCamera else { return true }
 
         let movement = simd_distance(SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z),
                                      SIMD3(previous.columns.3.x, previous.columns.3.y, previous.columns.3.z))
-        if movement > 0.20 { return true }
+        if movement > 0.12 { return true }
 
         let forward = SIMD3<Float>(-pose.columns.2.x, -pose.columns.2.y, -pose.columns.2.z)
         let previousForward = SIMD3<Float>(-previous.columns.2.x, -previous.columns.2.y, -previous.columns.2.z)
-        return simd_dot(forward, previousForward) < cos(12 * .pi / 180)
+        return simd_dot(forward, previousForward) < cos(8 * .pi / 180)
     }
 
     /// En färdig bild som ännu inte bestämts vara värd att spara.
