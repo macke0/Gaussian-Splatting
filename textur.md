@@ -82,14 +82,45 @@ Att vikta förlusten per foto efter skärpa är alltså rimligt och oprövat. At
 GALLRA bort foton är det inte — färre foton betyder färre kvadratmeter täckta,
 och det är precis vad avsnittet ovan säger är den bindande resursen.
 
+## Renderaren är frikänd — mätt mot en känd god fil
+
+Inrias förtränade `train` (559 263 gaussare, SH-grad 3) lagd i appens mapp och
+visad med `BenchmarkSplatView` renderas FOTOREALISTISKT på telefonen: loknumret
+713, texten WESTERN PACIFIC, nitarna och gruset går att läsa. Samma Metal-väg,
+samma shader, samma projektion som rummet. Suddigheten ligger alltså i vad vi
+matar in, inte i hur det ritas — sluta leta i `SplatRoomView` och shadern.
+
+Två saker måste vara rätt för att provet ska säga något:
+
+- **Kameran måste stå i en av datasetets egna poser.** Ur en fritt vald bana ser
+  scenen ut som färgat dis, precis som `reach` beskriver för vårt rum. Därför
+  hämtar `server/tools/fetch_benchmark.py` även `cameras.json`.
+- **Målets färgrum följer filen.** Vår egen splat matas in förkompenserad och
+  vill ha ett rått mål (`matchingTraining`); en främmande fil matas in orörd och
+  vill ha `.bgra8Unorm_srgb`. Fel val ger en mörk och övermättad bild.
+
+## Radietaket är inte längre bindande
+
+Om av på hela rummet vid 2 M-budgeten, 30 000 steg, undanhållna foton:
+
+| tak | L1 | skärpa | hål | gaussare | medianaxel |
+|---|---|---|---|---|---|
+| 50 mm | 0,1148 | 61 % | 10,2 % | 877 277 | 20,8 mm |
+| 25 mm | 0,1235 | 62 % | 12,7 % | 884 089 | 23,3 mm |
+
+Skärpan står stilla, L1 blir sämre och hålen växer. Det avgörande talet är
+medianaxeln: vid gamla budgeten låg den på 44 mm med 95:e percentilen exakt på
+taket, alltså band taket nästan allt. Nu ligger den långt under. Med fyra gånger
+fler gaussare väljer träningen redan små — att tvinga dem mindre ger bara hål.
+
 ## Avfärdat med mätning, försök inte igen
 
 - **Straffen i förlusten** (opacitet, skala) — ingen mätbar skillnad på skärpan.
 - **Sfäriska harmoniker över grad 0** — MetalSplatter har ingen SH-väg alls, så
   koefficienterna hade ändå aldrig nått fram till skärmen.
 - **Platta skivor vid seedningen** — en pixels vinst, inom bruset.
-- **Radietak under 5 cm** — skärpan stiger men bilden får HÅL och L1 blir sämre.
-  Mindre penslar utan fler penslar är glesare täckning, inte mer detalj.
+- **Radietak under 5 cm** — se avsnittet ovan. Mindre penslar utan fler penslar
+  är glesare täckning, inte mer detalj.
 - **Färre steg** — sämre på allt.
 - **Fragmentering och mipmapping i atlasen** — nästan oskyldiga. Läs atlasen i
   FULL upplösning innan du tror på en teori om smetet; vid 1:1 syns boktitlar.

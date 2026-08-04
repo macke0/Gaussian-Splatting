@@ -14,6 +14,8 @@ struct RoomLibraryView: View {
     @State private var queue = BakeQueue()
     @State private var showsScanner = false
     @State private var openRoom: SavedRoom?
+    /// Referensfilen, om någon lagts i appens mapp. Se `BenchmarkSplatView`.
+    @State private var benchmark = BenchmarkSplatView.availableFile()
 
     var body: some View {
         NavigationStack {
@@ -28,6 +30,17 @@ struct RoomLibraryView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Skanna rum", systemImage: "plus") { showsScanner = true }
+                }
+                // Bara när en referensfil ligger i appens mapp. Knappen är ett
+                // mätinstrument och ingen funktion — kunden ser den aldrig.
+                if let benchmark {
+                    ToolbarItem(placement: .topBarLeading) {
+                        NavigationLink {
+                            BenchmarkSplatView(url: benchmark)
+                        } label: {
+                            Label("Referens", systemImage: "ruler")
+                        }
+                    }
                 }
             }
             .navigationDestination(item: $openRoom) { room in

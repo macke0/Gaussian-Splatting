@@ -23,6 +23,17 @@ struct SplatRoomView: UIViewRepresentable {
     /// Punkten kameran kretsar kring: helst där fotografen stod. Utan den
     /// används mitten av splattens låda, som kan ligga inne i en möbel.
     let standingAt: SIMD3<Float>?
+    /// Främmande fil: visa den precis som den är skriven.
+    ///
+    /// Två saker gäller bara våra egna filer. `matchingTraining` kompenserar för
+    /// vilket färgrum VÅR träning blandade i, och `reach` håller kameran inne i
+    /// rummet för att splatten bara sett det inifrån. En fil från någon annan
+    /// tränare kan ha blandat i linjärt rum och kan vara ett föremål man ska gå
+    /// runt — då är båda hjälperna skada, inte hjälp.
+    ///
+    /// Flaggan finns för att kunna avgöra en enda fråga: renderar vi en känd god
+    /// fil skarpt? Gör vi det ligger suddigheten i vår indata och inte i Metal.
+    var asAuthored = false
     @Binding var yaw: Float
     @Binding var pitch: Float
     @Binding var distance: Float
@@ -31,8 +42,11 @@ struct SplatRoomView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
-        // Rått mål, inte `.bgra8Unorm_srgb`. Se `matchingTraining`.
-        view.colorPixelFormat = .bgra8Unorm
+        // Rått mål för våra egna filer, se `matchingTraining` — vi matar in
+        // motsatsen till shaderns `pow(2.2)` och då får målet inte koda om en
+        // gång till. En främmande fil matas in orörd, och då är shadern rätt
+        // som den är: den räknar med ett mål som kodar tillbaka till sRGB.
+        view.colorPixelFormat = asAuthored ? .bgra8Unorm_srgb : .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
         view.sampleCount = 1
         // Genomskinlig botten, så gradienten bakom vyn syns där rummet har hål.
@@ -40,7 +54,8 @@ struct SplatRoomView: UIViewRepresentable {
         view.isOpaque = false
         view.delegate = context.coordinator
 
-        context.coordinator.start(in: view, url: url, standingAt: standingAt, onLoad: onLoad)
+        context.coordinator.start(in: view, url: url, standingAt: standingAt,
+                                  asAuthored: asAuthored, onLoad: onLoad)
         return view
     }
 
@@ -89,13 +104,34 @@ private func matchingTraining(_ points: [SplatPoint]) -> [SplatPoint] {
     }
 }
 
-private func bounds(of points: [SplatPoint]) -> (SIMD3<Float>, SIMD3<Float>) {
+/// Lådan punkterna ligger i, eventuellt med ytterkanterna bortklippta.
+///
+/// Vår egen splat är klippt redan i träningen och har inga utstickare. En
+/// främmande scen har det: COLMAP sätter enstaka gaussare hundratals meter bort
+/// där himlen är, och då säger min och max ingenting om var scenen faktiskt är.
+/// Med `trimming` blir ramen percentiler i stället, och kameran hittar hem.
+///
+/// Tiondelen är mätt på Inrias `train`: kärnan är ±2,5 m, men var tjugonde
+/// gaussare ligger längre bort än 5 m och var femtionde längre bort än 12.
+/// Vid två procent hamnar kameran tjugo meter ut och ser bara bakgrunden.
+private func bounds(of points: [SplatPoint],
+                    trimming: Float = 0) -> (SIMD3<Float>, SIMD3<Float>) {
     guard let first = points.first?.position else { return (.zero, .zero) }
+    guard trimming > 0 else {
+        var low = first, high = first
+        for point in points {
+            low = simd_min(low, point.position)
+            high = simd_max(high, point.position)
+        }
+        return (low, high)
+    }
 
-    var low = first, high = first
-    for point in points {
-        low = simd_min(low, point.position)
-        high = simd_max(high, point.position)
+    var low = SIMD3<Float>(), high = SIMD3<Float>()
+    let cut = Int(Float(points.count) * trimming)
+    for axis in 0..<3 {
+        let sorted = points.map { $0.position[axis] }.sorted()
+        low[axis] = sorted[cut]
+        high[axis] = sorted[sorted.count - 1 - cut]
     }
     return (low, high)
 }
@@ -113,6 +149,8 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     /// fast; annars vandrar den med lådan medan filen läses.
     private var center = SIMD3<Float>(repeating: 0)
     private var anchored = false
+    /// Se `SplatRoomView.asAuthored`.
+    private var asAuthored = false
     private var lowest: SIMD3<Float>?
     private var highest: SIMD3<Float>?
     private var yaw: Float = 0
@@ -146,9 +184,11 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     func start(in view: MTKView,
                url: URL,
                standingAt viewpoint: SIMD3<Float>?,
+               asAuthored: Bool = false,
                onLoad: @escaping @MainActor (Result<Int, Error>) -> Void) {
         guard let device = view.device else { return }
         queue = device.makeCommandQueue()
+        self.asAuthored = asAuthored
 
         if let viewpoint {
             center = viewpoint
@@ -175,16 +215,20 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
                     guard pending.count >= chunkSize else { continue }
 
                     loaded += pending.count
-                    await renderer.addChunk(
-                        try SplatChunk(device: device, from: matchingTraining(pending)))
-                    await self?.show(renderer, covering: bounds(of: pending))
+                    await renderer.addChunk(try SplatChunk(
+                        device: device,
+                        from: asAuthored ? pending : matchingTraining(pending)))
+                    await self?.show(renderer, covering: bounds(
+                        of: pending, trimming: asAuthored ? 0.1 : 0))
                     pending.removeAll(keepingCapacity: true)
                 }
                 if !pending.isEmpty {
                     loaded += pending.count
-                    await renderer.addChunk(
-                        try SplatChunk(device: device, from: matchingTraining(pending)))
-                    await self?.show(renderer, covering: bounds(of: pending))
+                    await renderer.addChunk(try SplatChunk(
+                        device: device,
+                        from: asAuthored ? pending : matchingTraining(pending)))
+                    await self?.show(renderer, covering: bounds(
+                        of: pending, trimming: asAuthored ? 0.1 : 0))
                 }
                 await onLoad(.success(loaded))
             } catch {
@@ -239,11 +283,33 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     /// — men stannar innanför väggarna. Se `reach`.
     private var viewMatrix: simd_float4x4 {
         let direction = SIMD3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw))
-        let eye = center + min(distance, reach(along: direction)) * direction
+        let eye = center + range(along: direction) * direction
         // Splatten ligger i ARKits värld, Y uppåt. Vanliga 3DGS-filer kommer
         // från COLMAP och står upp och ner — därför vänder MetalSplatters
-        // exempelapp på dem. Våra behöver ingen sådan vändning.
-        return Self.look(from: eye, at: center, up: SIMD3(0, 1, 0))
+        // exempelapp på dem, och därför vänder vi en främmande fil men inte vår.
+        return Self.look(from: eye, at: center,
+                         up: SIMD3(0, asAuthored ? -1 : 1, 0))
+    }
+
+    /// Var kameran hamnar åt ett håll.
+    ///
+    /// För vår egen splat är `distance` meter, för den är mätt i ett rum vars
+    /// storlek vi känner — och kameran hålls innanför väggarna, se `reach`.
+    ///
+    /// En främmande fil har varken kända väggar eller känd skala: COLMAP väljer
+    /// sin enhet fritt, och scenen kan vara ett föremål man ska gå runt. Utan
+    /// given målpunkt räknas `distance` därför i scenradier i stället, så att
+    /// samma startvärde ramar in vad som helst. Är målpunkten given kommer den
+    /// ur datasetets egna kameror, och då är skalan känd igen.
+    private func range(along direction: SIMD3<Float>) -> Float {
+        guard !asAuthored else { return anchored ? distance : distance * radius }
+        return min(distance, reach(along: direction))
+    }
+
+    /// Halva scenens längsta sida, aldrig noll.
+    private var radius: Float {
+        guard let lowest, let highest else { return 1 }
+        return max((highest - lowest).max() / 2, 0.001)
     }
 
     /// Så långt kameran får gå åt ett håll innan den är utanför rummet.
