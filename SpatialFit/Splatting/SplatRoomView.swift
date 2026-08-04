@@ -31,7 +31,8 @@ struct SplatRoomView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
-        view.colorPixelFormat = .bgra8Unorm_srgb
+        // Rått mål, inte `.bgra8Unorm_srgb`. Se `matchingTraining`.
+        view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
         view.sampleCount = 1
         // Genomskinlig botten, så gradienten bakom vyn syns där rummet har hål.
@@ -56,6 +57,37 @@ struct SplatRoomView: UIViewRepresentable {
 /// PLY-läsaren skickar ut några hundra i taget, och varje klump renderaren
 /// håller sorteras om varje bildruta — tusentals små vore dyrare än en stor.
 private let chunkSize = 50_000
+
+/// Färgerna som träningen faktiskt passade, inte som shadern gissar att de är.
+///
+/// gsplat tränar mot fotonas sRGB-pixlar och blandar gaussarna i sRGB.
+/// MetalSplatters shader kör i stället varje gaussare genom `pow(2.2)` FÖRE
+/// blandningen, för att den räknar med ett `_srgb`-mål som kodar tillbaka
+/// efteråt. För en ensam ogenomskinlig gaussare är det samma sak. För femtio
+/// halvgenomskinliga staplade på varandra är det inte det: att jämna ut i
+/// linjärt rum och koda tillbaka ger ett ljusare och plattare medelvärde än
+/// att jämna ut i sRGB. Uppmätt på det här rummet ur appens egen kamera —
+/// medelljus 0,55 → 0,63 och skärpa 0,0121 → 0,0100. Det är pastellbilden.
+///
+/// Shadern går inte att ändra, men den går att mata motsatsen. Lämnar vi in
+/// `färg^(1/2.2)` tar dess `pow(2.2)` ut den, och blandningen sker på precis
+/// de värden som passades mot fotona. Då måste målet vara rått — kodade det
+/// en gång till vore vi tillbaka där vi började.
+///
+/// Filen på disk rörs inte: den är en vanlig 3DGS-PLY och ska gå att öppna i
+/// vilken annan visare som helst.
+private func matchingTraining(_ points: [SplatPoint]) -> [SplatPoint] {
+    points.map { point in
+        var point = point
+        let color = point.color.asSRGBFloat
+        let compensated = SIMD3(pow(color.x, 1 / 2.2),
+                                pow(color.y, 1 / 2.2),
+                                pow(color.z, 1 / 2.2))
+        point.color = .sphericalHarmonicFloat(
+            [(compensated - 0.5) * SplatPoint.Color.INV_SH_C0])
+        return point
+    }
+}
 
 private func bounds(of points: [SplatPoint]) -> (SIMD3<Float>, SIMD3<Float>) {
     guard let first = points.first?.position else { return (.zero, .zero) }
@@ -143,13 +175,15 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
                     guard pending.count >= chunkSize else { continue }
 
                     loaded += pending.count
-                    await renderer.addChunk(try SplatChunk(device: device, from: pending))
+                    await renderer.addChunk(
+                        try SplatChunk(device: device, from: matchingTraining(pending)))
                     await self?.show(renderer, covering: bounds(of: pending))
                     pending.removeAll(keepingCapacity: true)
                 }
                 if !pending.isEmpty {
                     loaded += pending.count
-                    await renderer.addChunk(try SplatChunk(device: device, from: pending))
+                    await renderer.addChunk(
+                        try SplatChunk(device: device, from: matchingTraining(pending)))
                     await self?.show(renderer, covering: bounds(of: pending))
                 }
                 await onLoad(.success(loaded))
