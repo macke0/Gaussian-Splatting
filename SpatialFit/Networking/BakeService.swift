@@ -146,7 +146,19 @@ struct BakeService: Sendable {
             try await Task.sleep(for: Self.pollInterval)
 
             let url = server.appending(path: "bake").appending(path: job)
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let data: Data, response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(from: url)
+            } catch let error as URLError where Self.isTransient(error) {
+                // Servern räknar med hela maskinen medan den bakar och hinner
+                // inte alltid svara inom minuten URLSession väntar. Uppmätt på
+                // en riktig bakning: en statusfråga var sextonde sekund under
+                // de tio minuter atlasen målas. Jobbet lever kvar på servern
+                // oavsett vad telefonen gör, så det vore slöseri att kasta en
+                // bakning som är tio minuter in för att ett anrop inte kom
+                // fram. Fråga igen tills fristen är slut.
+                continue
+            }
             try Self.check(response, data)
 
             guard let status = try? JSONDecoder().decode(JobStatus.self, from: data) else {
@@ -243,6 +255,19 @@ struct BakeService: Sendable {
 
         try handle.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
         return body
+    }
+
+    /// Om felet är sådant att samma fråga kan lyckas om en stund. Ett hus utan
+    /// täckning och en server som inte hinner svara ser likadana ut härifrån,
+    /// och båda går över.
+    private static func isTransient(_ error: URLError) -> Bool {
+        switch error.code {
+        case .timedOut, .cannotConnectToHost, .networkConnectionLost,
+             .notConnectedToInternet, .dnsLookupFailed, .cannotFindHost:
+            true
+        default:
+            false
+        }
     }
 
     private static func check(_ response: URLResponse, _ data: Data?) throws {
