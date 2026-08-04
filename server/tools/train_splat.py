@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from spatialfit_server.bundle import ScanBundle  # noqa: E402
 from spatialfit_server.splat import (DEFAULT_ITERATIONS, DEFAULT_MAX_SPLATS,  # noqa: E402
-                                     synthetic_keyframes, train, write_ply)
+                                     synthetic_keyframes, train, write_ply, write_spz)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("directory", type=Path,
                         help="mappen med room.mesh, keyframes.json och fotona")
     parser.add_argument("--output", type=Path, default=None,
-                        help="var PLY:n ska hamna (förval: rummets mapp)")
+                        help="var filen ska hamna; .spz ger SPZ, annars PLY "
+                             "(förval: room.ply i rummets mapp)")
     parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
     parser.add_argument("--max-splats", type=int, default=DEFAULT_MAX_SPLATS)
     parser.add_argument("--no-densify", action="store_true",
@@ -54,8 +55,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Gick inte att träna: {error}", file=sys.stderr)
         return 1
 
+    # Ändelsen väljer format. PLY är förval här och inte i bakningen med flit:
+    # verktyget finns för att kunna öppna splatten i vilken visare som helst,
+    # och alla läser PLY medan färre läser SPZ.
     destination = arguments.output or arguments.directory / "room.ply"
-    write_ply(model, destination)
+    (write_spz if destination.suffix == ".spz" else write_ply)(model, destination)
 
     if arguments.preview is not None:
         _preview(model, bundle, arguments.preview, destination.with_suffix(".png"))

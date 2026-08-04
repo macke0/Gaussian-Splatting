@@ -56,8 +56,11 @@ struct BakeService: Sendable {
         let hasSplat: Bool
     }
 
-    /// Splatten på disk, bredvid den bakade meshen.
-    static let splatFilename = "splat.ply"
+    /// Splatten på disk, bredvid den bakade meshen. Ändelsen är inte kosmetisk:
+    /// MetalSplatter väljer läsare efter den, och SPZ är tjugo byte per gaussare
+    /// mot PLY:ns sextioåtta. Det är den skillnaden som gör att rummet får
+    /// tillräckligt många gaussare per kvadratmeter för att bli skarpt.
+    static let splatFilename = "splat.spz"
 
     enum Failure: LocalizedError {
         case noSurface
@@ -95,7 +98,7 @@ struct BakeService: Sendable {
     }
 
     /// Väntar ut ett jobb som redan är igång och skriver `baked.mesh`,
-    /// `baked.png` och eventuell `splat.ply` i `destination`. `report` får
+    /// `baked.png` och eventuell `splat.spz` i `destination`. `report` får
     /// tillståndet så vyn kan visa det.
     @discardableResult
     func collect(_ job: String,

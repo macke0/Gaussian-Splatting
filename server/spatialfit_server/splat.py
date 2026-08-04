@@ -95,10 +95,22 @@ DEFAULT_MAX_SPLATS = 300_000
 DEFAULT_ITERATIONS = 30_000
 #: Hur många extra vyer som vävs in mellan de riktiga fotona.
 DEFAULT_EXTRA_VIEWS = 2
-#: Så många gaussare telefonen får. Formatet är 68 byte styck, så 400 000 är
-#: ungefär 27 MB att ladda ner och lika mycket i GPU-minnet. Talet är också
-#: träningens tak — se ``train``.
-PHONE_SPLAT_BUDGET = 400_000
+#: Så många gaussare telefonen får. Talet är också träningens tak — se ``train``.
+#:
+#: Det som avgör skärpan är gaussare per KVADRATMETER, och det är uppmätt: samma
+#: modell, samma antal steg, samma budget, men sexton foton av ETT hörn ger 85 %
+#: av fotots skärpa medan hundraåtta foton av hela rummet ger 40 %. Renderingen
+#: ur det trånga fallet går knappt att skilja från fotografiet. Väggen är alltså
+#: inte modellen, inte poserna och inte förlusten — det är att lika många
+#: gaussare ska räcka till sju gånger så stor yta.
+#:
+#: Budgeten svarar därefter: 220k → 455k → 771k gaussare på hela rummet ger
+#: 40 → 49 → 58 % skärpa, en kurva som ännu inte har planat ut. Talet nedan är
+#: satt så att den mätta kurvan får fortsätta, inte efter vad som råkar rymmas i
+#: ett filformat. Det var PLY-formatets 68 byte per gaussare som satte det förra
+#: taket på 400 000; SPZ tar 20 byte, så samma nedladdning bär tre gånger fler
+#: — se ``write_spz``.
+PHONE_SPLAT_BUDGET = 2_000_000
 
 #: Nollte sfäriska harmoniken. Splat-visare lagrar färgen som SH-koefficient och
 #: räknar tillbaka den som ``0.5 + SH_DC * f_dc``.
@@ -443,6 +455,115 @@ def write_ply(model: SplatModel, path) -> None:
         file.write(header.encode("ascii"))
         file.write(table.tobytes())
     log.info("skrev %d gaussare till %s", count, path)
+
+
+#: Positionens upplösning i SPZ: antal bitar under decimalkommat av ett
+#: 24-bitars heltal. Tolv ger 1/4096 m ≈ 0,24 mm och räcker till ±2048 m —
+#: långt under både LiDAR-brus och det minsta en gaussare kan vara.
+_SPZ_FRACTIONAL_BITS = 12
+#: Formatets egen skalning av SH-nollterm innan den kvantiseras till en byte.
+#: Fast tal i Niantics format, inte något att ställa in.
+_SPZ_COLOR_SCALE = 0.15
+
+
+def write_spz(model: SplatModel, path) -> None:
+    """Skriver splatten i Niantics SPZ-format, gzippat.
+
+    Tjugo byte per gaussare mot PLY-formatets sextioåtta. Det är inte en
+    optimering utan det som gör budgeten möjlig: skärpan sitter i gaussare per
+    kvadratmeter (se ``PHONE_SPLAT_BUDGET``), och en nedladdning som telefonen
+    orkar med rymmer tre gånger fler i det här formatet.
+
+    Kvantiseringen är grov med flit och kostar mindre än den ser ut att göra:
+    färgen får ungefär två grånivåer av 255, medan felet mot fotot ligger på
+    tjugoåtta. Positionen är däremot nästan exakt — 0,24 mm.
+
+    Version 3 av formatet, alltså kvaternionen som "minsta tre" (se
+    ``_smallest_three``). Version 2 lagrar i stället de tre FÖRSTA talen och
+    räknar fram det fjärde ur normen, och det är mätt otillräckligt: när det
+    fjärde talet är litet blir det känsligt för kvantiseringsfelet i de tre
+    andra, och värsta gaussaren kom 6,8° fel. Med minsta tre kostar det en byte
+    till per gaussare och felet ligger på en tiondels grad.
+
+    Läsaren (MetalSplatter) tolkar filen som "höger, upp, bak" och räknar om
+    till PLY-konventionen "höger, ned, fram" genom att byta tecken på y och z.
+    Vår PLY skrivs redan i ARKits system och läses utan omräkning, så här måste
+    samma teckenbyte göras i förväg för att de två filerna ska visa samma rum.
+
+    Ordningen slumpas av samma skäl som i ``write_ply``.
+    """
+    import gzip
+    import struct
+    from pathlib import Path
+
+    count = len(model.means)
+    order = np.random.default_rng(0).permutation(count)
+
+    # Höger-upp-bak in, höger-ned-fram ut: läsaren byter tecken på y och z i
+    # både läge och kvaternionens tre första tal, så vi byter dem här.
+    flip = np.array([1.0, -1.0, -1.0], np.float64)
+
+    fixed = np.rint(model.means[order].astype(np.float64) * flip
+                    * (1 << _SPZ_FRACTIONAL_BITS)).astype(np.int32)
+    positions = ((fixed.reshape(-1, 1) >> np.array([0, 8, 16])) & 0xFF).astype(np.uint8)
+
+    # Aldrig 0 eller 255: läsaren tar logit av talet, och båda ändarna är
+    # oändligheter som förgiftar varje gaussare de rör vid.
+    alphas = _to_byte(1 / (1 + np.exp(-model.opacities[order])) * 255).clip(1, 254)
+    colors = _to_byte(((model.colors[order] - 0.5) / SH_DC
+                       * _SPZ_COLOR_SCALE + 0.5) * 255)
+    scales = _to_byte((model.scales[order] + 10) * 16)
+
+    # wxyz hos oss, xyzw i formatet, och teckenbytet på xyz på köpet.
+    quats = model.quats[order][:, [1, 2, 3, 0]].astype(np.float64) * [*flip, 1.0]
+    rotations = _smallest_three(
+        quats / np.maximum(np.linalg.norm(quats, axis=1, keepdims=True), 1e-12))
+
+    header = struct.pack("<IIIBBBB", 0x5053474E, 3, count, 0,
+                         _SPZ_FRACTIONAL_BITS, 0, 0)
+    body = b"".join(part.tobytes() for part in
+                    (positions, alphas, colors, scales, rotations))
+    Path(path).write_bytes(gzip.compress(header + body, 6))
+    log.info("skrev %d gaussare till %s", count, path)
+
+
+def _to_byte(values: np.ndarray) -> np.ndarray:
+    """Avrundat och klippt till ett osignerat byte."""
+    return np.rint(values).clip(0, 255).astype(np.uint8)
+
+
+def _smallest_three(quats: np.ndarray) -> np.ndarray:
+    """Kvaternioner (xyzw, normerade) packade fyra byte styck som "minsta tre".
+
+    Det största talet lagras inte alls utan räknas fram ur normen på andra
+    sidan; bara vilket av de fyra det var. Det gör felet jämnt fördelat, för
+    talet som gissas är alltid det som tål gissningen bäst — till skillnad från
+    version 2, som alltid utelämnar w oavsett hur litet w råkar vara.
+
+    Trettio bitar av ordet är de tre kvarvarande talen med tio bitar var: en
+    teckenbit och nio bitars belopp mot ``sqrt(1/2)``, vilket är det största ett
+    icke-största tal kan vara. De två översta bitarna säger vilket som utelämnas.
+    Tecknen är relativa det utelämnade talets, som därmed antas positivt — en
+    kvaternion och dess negation är samma vridning.
+    """
+    largest = np.abs(quats).argmax(axis=1)
+    rows = np.arange(len(quats))
+    # Vänds så att det utelämnade talet är positivt; annars går det inte att
+    # räkna fram ur normen, som saknar tecken.
+    quats = np.where(quats[rows, largest][:, None] < 0, -quats, quats)
+
+    word = largest.astype(np.uint32)
+    for index in range(4):
+        # Det utelämnade talet hoppas över genom att bara de andra tre skiftas
+        # in; masken är noll på just den raden och lämnar ordet orört.
+        keep = (largest != index)
+        value = quats[:, index]
+        magnitude = np.rint(np.abs(value) / np.sqrt(0.5) * 511).clip(0, 511)
+        packed = (value < 0).astype(np.uint32) << 9 | magnitude.astype(np.uint32)
+        word = np.where(keep, word << np.uint32(10) | packed, word)
+
+    return ((word[:, None] >> np.array([0, 8, 16, 24], np.uint32))
+            & np.uint32(0xFF)).astype(np.uint8)
 
 
 def _pulled_to_surface(points: np.ndarray, tree, surface: np.ndarray) -> tuple[np.ndarray, int]:

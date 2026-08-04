@@ -59,9 +59,9 @@ class BakedRoom:
         Image.fromarray(self.texture).save(directory / "baked.png")
 
         if self.splat is not None:
-            from .splat import write_ply
+            from .splat import write_spz
 
-            write_ply(self.splat, directory / "splat.ply")
+            write_spz(self.splat, directory / "splat.spz")
 
 
 def bake_room(directory: Path,

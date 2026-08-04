@@ -95,7 +95,7 @@ async def bake_status(job_id: str) -> dict:
         raise HTTPException(status_code=404, detail="okänt jobb")
     return {"id": job.id, "status": job.status, "detail": job.detail,
             "seenFraction": job.seen_fraction, "triangleCount": job.triangle_count,
-            "hasSplat": job.result is not None and (job.result / "splat.ply").exists()}
+            "hasSplat": job.result is not None and (job.result / "splat.spz").exists()}
 
 
 @app.get("/bake/{job_id}/mesh")
@@ -110,8 +110,8 @@ async def bake_texture(job_id: str) -> FileResponse:
 
 @app.get("/bake/{job_id}/splat")
 async def bake_splat(job_id: str) -> FileResponse:
-    """Splatten som PLY. Finns bara när färgkällan var ``splat``."""
-    return _file(job_id, "splat.ply", "application/octet-stream")
+    """Splatten som SPZ. Finns bara när färgkällan var ``splat``."""
+    return _file(job_id, "splat.spz", "application/octet-stream")
 
 
 @app.post("/identify")

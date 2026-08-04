@@ -7,6 +7,8 @@ vackert renderat men fel rum, och det syns inte i en förlustkurva.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import trimesh
@@ -15,9 +17,9 @@ from spatialfit_server.bundle import Keyframe, ScanBundle
 from spatialfit_server.mesh import SceneMesh
 from spatialfit_server.pipeline import bake_room
 from spatialfit_server.atlas import vertex_normals
-from spatialfit_server.splat import (MAXIMUM_DRIFT, SEED_THICKNESS, SplatModel, _aligned,
-                                     _between, _poses, _pulled_to_surface, _seed,
-                                     _trimmed, write_ply)
+from spatialfit_server.splat import (MAXIMUM_DRIFT, SEED_THICKNESS, SH_DC, SplatModel,
+                                     _aligned, _between, _poses, _pulled_to_surface,
+                                     _seed, _trimmed, write_ply, write_spz)
 
 
 def keyframe(identifier: int, angle: float) -> Keyframe:
@@ -219,6 +221,101 @@ def test_hela_modellen_skrivs_utan_gallring(tmp_path):
 
     header = (tmp_path / "splat.ply").read_bytes()[:200].decode("ascii", "ignore")
     assert "element vertex 10" in header
+
+
+def _read_spz(path):
+    """Läser tillbaka en SPZ-fil precis som MetalSplatter gör det.
+
+    Skrivet efter ``spz-swift`` och inte efter ``write_spz``: ett test som
+    speglar skrivaren hade bara bevisat att den är konsekvent med sig själv.
+    Här avkodas filen som mottagaren avkodar den, inklusive dess omräkning
+    från "höger, upp, bak" till PLY-konventionen.
+    """
+    import gzip
+    import struct
+
+    raw = gzip.decompress(Path(path).read_bytes())
+    magic, version, count, sh_degree, bits, flags, _ = struct.unpack_from("<IIIBBBB", raw)
+    assert magic == 0x5053474E and version == 3 and sh_degree == 0 and flags == 0
+
+    body = np.frombuffer(raw, np.uint8, offset=16)
+    lengths = (count * 9, count, count * 3, count * 3, count * 4)
+    edges = np.cumsum((0,) + lengths)
+    parts = [body[start:stop] for start, stop in zip(edges, edges[1:])]
+
+    packed = parts[0].reshape(-1, 3).astype(np.int32)
+    fixed = packed[:, 0] | (packed[:, 1] << 8) | (packed[:, 2] << 16)
+    fixed = np.where(fixed & 0x800000, fixed - (1 << 24), fixed)
+    flip = np.array([1.0, -1.0, -1.0])
+    means = fixed.reshape(-1, 3) / (1 << bits) * flip
+
+    opacities = np.log(parts[1] / 255 / (1 - parts[1] / 255))
+    colors = (parts[2].reshape(-1, 3) / 255 - 0.5) / 0.15 * SH_DC + 0.5
+    scales = parts[3].reshape(-1, 3) / 16 - 10
+
+    # "Minsta tre": de tre minsta talen bakifrån, tio bitar var, sedan säger de
+    # två översta bitarna vilket tal som utelämnades och ska räknas fram.
+    word = parts[4].reshape(-1, 4).astype(np.uint32)
+    word = word[:, 0] | word[:, 1] << 8 | word[:, 2] << 16 | word[:, 3] << 24
+    largest = (word >> np.uint32(30)).astype(np.int64)
+    xyzw = np.zeros((count, 4))
+    for index in (3, 2, 1, 0):
+        keep = largest != index
+        sign = np.where(word & np.uint32(1 << 9), -1.0, 1.0)
+        xyzw[:, index] = np.where(keep, sign * (word & np.uint32(511)) * np.sqrt(0.5) / 511, 0)
+        word = np.where(keep, word >> np.uint32(10), word)
+    xyzw[np.arange(count), largest] = np.sqrt(
+        np.maximum(0, 1 - (xyzw ** 2).sum(axis=1)))
+
+    xyzw[:, :3] *= flip
+    return means, xyzw[:, [3, 0, 1, 2]], scales, opacities, colors
+
+
+def test_spz_gar_att_lasa_tillbaka(tmp_path):
+    # Formatet kvantiserar hårt, så det som kontrolleras är att varje fält
+    # hamnar i rätt fack och överlever tur och retur — inte att det är exakt.
+    generator = np.random.default_rng(0)
+    quats = generator.normal(size=(64, 4)).astype(np.float32)
+    quats /= np.linalg.norm(quats, axis=1, keepdims=True)
+    model = SplatModel(
+        means=generator.uniform(-4, 4, (64, 3)).astype(np.float32),
+        quats=quats,
+        scales=generator.uniform(-6, -2, (64, 3)).astype(np.float32),
+        opacities=generator.uniform(-3, 3, 64).astype(np.float32),
+        colors=generator.uniform(0.05, 0.95, (64, 3)).astype(np.float32))
+
+    write_spz(model, tmp_path / "splat.spz")
+    means, read_quats, scales, opacities, colors = _read_spz(tmp_path / "splat.spz")
+
+    # Ordningen slumpas i skrivaren, så jämförelsen sker mot samma permutation.
+    order = np.random.default_rng(0).permutation(64)
+    assert np.allclose(means, model.means[order], atol=3e-4)
+    assert np.allclose(scales, model.scales[order], atol=0.04)
+    assert np.allclose(colors, model.colors[order], atol=0.02)
+    assert np.allclose(opacities, model.opacities[order], atol=0.05)
+    # Kvaternionen mäts som rotation och inte komponentvis: formatet lagrar tre
+    # tal och räknar fram det fjärde ur normen, så ett kvantiseringsfel på en
+    # tusendel i de tre kan slå igenom tiofalt i det fjärde utan att rotationen
+    # rört sig nämnvärt. Skalärprodukten är vinkeln mellan dem, och den ska vara
+    # noll — tecknet spelar ingen roll, en kvaternion och dess negation är samma
+    # vridning.
+    turned = np.abs((read_quats * model.quats[order]).sum(axis=1))
+    assert np.degrees(2 * np.arccos(turned.clip(0, 1))).max() < 1.0
+
+
+def test_spz_ar_mycket_mindre_an_ply(tmp_path):
+    # Tjugo byte mot sextioåtta är hela skälet till bytet: det är den kvoten
+    # som gör att budgeten kan höjas utan att nedladdningen växer.
+    model = SplatModel(means=np.zeros((5000, 3), np.float32),
+                       quats=np.tile([1.0, 0, 0, 0], (5000, 1)).astype(np.float32),
+                       scales=np.zeros((5000, 3), np.float32),
+                       opacities=np.zeros(5000, np.float32),
+                       colors=np.zeros((5000, 3), np.float32))
+
+    write_ply(model, tmp_path / "splat.ply")
+    write_spz(model, tmp_path / "splat.spz")
+
+    assert (tmp_path / "splat.spz").stat().st_size < (tmp_path / "splat.ply").stat().st_size / 3
 
 
 def test_okand_fargkalla_avvisas(tmp_path):

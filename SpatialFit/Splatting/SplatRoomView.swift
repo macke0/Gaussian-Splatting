@@ -54,8 +54,8 @@ struct SplatRoomView: UIViewRepresentable {
 }
 
 /// Hur många gaussare som samlas ihop innan de lämnas till renderaren.
-/// PLY-läsaren skickar ut några hundra i taget, och varje klump renderaren
-/// håller sorteras om varje bildruta — tusentals små vore dyrare än en stor.
+/// Läsaren skickar ut några tusen i taget, och varje klump renderaren håller
+/// sorteras om varje bildruta — tusentals små vore dyrare än en stor.
 private let chunkSize = 50_000
 
 /// Färgerna som träningen faktiskt passade, inte som shadern gissar att de är.
@@ -74,7 +74,7 @@ private let chunkSize = 50_000
 /// de värden som passades mot fotona. Då måste målet vara rått — kodade det
 /// en gång till vore vi tillbaka där vi började.
 ///
-/// Filen på disk rörs inte: den är en vanlig 3DGS-PLY och ska gå att öppna i
+/// Filen på disk rörs inte: den är en vanlig 3DGS-fil och ska gå att öppna i
 /// vilken annan visare som helst.
 private func matchingTraining(_ points: [SplatPoint]) -> [SplatPoint] {
     points.map { point in
