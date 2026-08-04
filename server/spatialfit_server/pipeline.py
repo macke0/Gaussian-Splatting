@@ -22,8 +22,8 @@ from PIL import Image
 
 from . import atlas as atlas_module
 from .bake import bake
-from .bundle import ScanBundle
-from .mesh import TexturedMesh
+from .bundle import ScanBundle, connected_surface
+from .mesh import SceneMesh, TexturedMesh
 
 log = logging.getLogger(__name__)
 
@@ -122,18 +122,10 @@ def _painting_views(bundle: "ScanBundle", color_source: str) -> tuple[list, obje
 def _cleaned(positions: np.ndarray, faces: np.ndarray,
              target_faces: int) -> tuple[np.ndarray, np.ndarray]:
     """Slår ihop dubbletter, kastar skräptrianglar, jämnar ut och glesar."""
-    mesh = trimesh.Trimesh(vertices=positions, faces=faces, process=True)
-    mesh.update_faces(mesh.nondegenerate_faces())
-    mesh.remove_unreferenced_vertices()
-
     # ARKit lämnar små flagor som svävar fritt. De blir egna öar i atlasen och
     # äter plats utan att synas.
-    components = mesh.split(only_watertight=False)
-    if len(components) > 1:
-        largest = max(component.area for component in components)
-        kept = [component for component in components if component.area > largest * 0.005]
-        if kept:
-            mesh = trimesh.util.concatenate(kept)
+    positions, faces = connected_surface(SceneMesh(positions, faces))
+    mesh = trimesh.Trimesh(vertices=positions, faces=faces, process=False)
 
     # Ett svagt drag Laplace tar bort LiDAR:ns kornighet utan att runda av
     # hörnen så mycket att rummet tappar form.

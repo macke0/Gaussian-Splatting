@@ -20,6 +20,13 @@ from PIL import Image
 
 from .mesh import SceneMesh
 
+#: Hur liten en fritt liggande del får vara innan den räknas som skräp, som
+#: andel av den största delens area. ARKit lämnar flagor efter sig när LiDAR
+#: läser av en spegling eller en rörlig sak: de hänger ihop med ingenting och
+#: svävar mitt i rummet. Uppmätt på det riktiga rummet: 419 sådana delar,
+#: 1,76 m² av 67, med 35 cm i median ut till närmaste riktiga yta.
+LOOSE_PIECE_FRACTION = 0.005
+
 
 @dataclass
 class Keyframe:
@@ -106,3 +113,37 @@ class ScanBundle:
                         depth_size=depth_size,
                         image=image,
                         depth=depth)
+
+
+def connected_surface(mesh: SceneMesh) -> tuple[np.ndarray, np.ndarray]:
+    """Skanningens yta utan de flagor som hänger fritt i luften.
+
+    Ligger här och inte i ``pipeline`` för att både bakningen och splatten
+    behöver den, och för att skillnaden syns tydligast i splatten: en gaussare
+    som sitter på en flaga är brus mitt i rummet som inget straff kan nå, för
+    den sitter ju på "ytan". Bakningen kastade flagorna redan innan; splatten
+    sådde på dem.
+
+    Delar bedöms på area och inte på antal trianglar: LiDAR-nätet är tätare nära
+    kameran, så en handflatestor flaga tagen på en meters håll kan ha fler
+    trianglar än en hel vägg sedd från andra sidan rummet.
+    """
+    import trimesh
+
+    if mesh.is_empty:
+        return mesh.positions, mesh.indices
+
+    surface = trimesh.Trimesh(vertices=mesh.positions, faces=mesh.indices, process=True)
+    surface.update_faces(surface.nondegenerate_faces())
+    surface.remove_unreferenced_vertices()
+
+    pieces = surface.split(only_watertight=False)
+    if len(pieces) > 1:
+        largest = max(piece.area for piece in pieces)
+        kept = [piece for piece in pieces
+                if piece.area > largest * LOOSE_PIECE_FRACTION]
+        if kept:
+            surface = trimesh.util.concatenate(kept)
+
+    return (np.asarray(surface.vertices, np.float32),
+            np.asarray(surface.faces, np.uint32))

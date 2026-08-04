@@ -12,7 +12,8 @@ import numpy as np
 import trimesh
 from PIL import Image
 
-from spatialfit_server.mesh import TexturedMesh
+from spatialfit_server.bundle import connected_surface
+from spatialfit_server.mesh import SceneMesh, TexturedMesh
 from spatialfit_server.pipeline import bake_room
 
 
@@ -58,6 +59,34 @@ def write_scan(directory, wall_color=(180, 90, 60)) -> None:
         })
 
     (directory / "keyframes.json").write_text(json.dumps(entries))
+
+
+def test_en_flaga_som_svavar_i_rummet_raknas_inte_som_yta():
+    """Det som ARKit lämnar efter sig mitt i luften ska inte gå att så på."""
+    room = trimesh.creation.box(extents=(4.0, 2.5, 4.0)).subdivide().subdivide()
+    flake = trimesh.creation.box(extents=(0.1, 0.1, 0.1))
+    flake.apply_translation([0.0, 0.0, 0.0])
+    both = trimesh.util.concatenate([room, flake])
+
+    positions, faces = connected_surface(
+        SceneMesh(np.asarray(both.vertices, np.float32),
+                  np.asarray(both.faces, np.uint32)))
+
+    # Flagan låg i mitten; efter städningen finns inget kvar där inne.
+    distance = np.linalg.norm(positions, axis=1)
+    assert distance.min() > 0.5
+    assert len(faces) == len(room.faces)
+
+
+def test_en_yta_utan_flagor_lamnas_orord():
+    room = trimesh.creation.box(extents=(4.0, 2.5, 4.0)).subdivide()
+
+    positions, faces = connected_surface(
+        SceneMesh(np.asarray(room.vertices, np.float32),
+                  np.asarray(room.faces, np.uint32)))
+
+    assert len(faces) == len(room.faces)
+    assert len(positions) == len(room.vertices)
 
 
 def test_ett_rum_bakas_till_mesh_och_textur(tmp_path):

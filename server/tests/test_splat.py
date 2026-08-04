@@ -14,8 +14,10 @@ import trimesh
 from spatialfit_server.bundle import Keyframe, ScanBundle
 from spatialfit_server.mesh import SceneMesh
 from spatialfit_server.pipeline import bake_room
-from spatialfit_server.splat import (MAXIMUM_DRIFT, SplatModel, _between, _poses,
-                                     _pulled_to_surface, _seed, _trimmed, write_ply)
+from spatialfit_server.atlas import vertex_normals
+from spatialfit_server.splat import (MAXIMUM_DRIFT, SEED_THICKNESS, SplatModel, _aligned,
+                                     _between, _poses, _pulled_to_surface, _seed,
+                                     _trimmed, write_ply)
 
 
 def keyframe(identifier: int, angle: float) -> Keyframe:
@@ -106,23 +108,55 @@ def test_justerade_kameror_gar_fore_arkits_egna():
     assert np.allclose(poses[1][1], _between(refined[0], refined[1], 0.5))
 
 
+def seeded(scan: ScanBundle, max_splats: int):
+    normals = vertex_normals(scan.mesh.positions, scan.mesh.indices)
+    return _seed(scan.mesh.positions, normals, max_splats)
+
+
 def test_startpunkterna_ligger_pa_ytan_och_far_skala_av_grannen():
     scan = bundle()
 
-    means, scales = _seed(scan, max_splats=1_000)
+    means, scales, quats = seeded(scan, max_splats=1_000)
 
     assert len(means) == len(np.unique(scan.mesh.positions.reshape(-1, 3), axis=0))
     assert np.all(scales > 0)
     # En gaussare ska täcka ungefär halva vägen till grannen, aldrig hela rummet.
     assert scales.max() < 2.0
+    assert np.allclose(np.linalg.norm(quats, axis=1), 1.0, atol=1e-5)
+
+
+def test_startpunkterna_ar_skivor_och_inte_klot():
+    scan = bundle()
+
+    _, scales, _ = seeded(scan, max_splats=1_000)
+
+    # Tredje axeln är den tunna: den ska peka ut ur väggen och nästan inget väga.
+    assert np.allclose(scales[:, 2], scales[:, 0] * SEED_THICKNESS)
+    assert np.all(scales[:, 2] < scales[:, 1])
+
+
+def test_skivan_laggs_an_mot_ytan():
+    """Den tunna axeln ska hamna längs normalen, oavsett vart den pekar."""
+    normals = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+                        [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], np.float32)
+
+    quats = _aligned(normals)
+
+    for quat, normal in zip(quats, normals):
+        w, x, y, z = quat
+        rotation = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+        assert np.allclose(rotation @ [0.0, 0.0, 1.0], normal, atol=1e-5)
 
 
 def test_startpunkterna_glesas_till_taket():
     scan = bundle()
 
-    means, scales = _seed(scan, max_splats=4)
+    means, scales, quats = seeded(scan, max_splats=4)
 
-    assert len(means) == len(scales) == 4
+    assert len(means) == len(scales) == len(quats) == 4
 
 
 def test_gaussare_som_svavar_ut_i_rummet_dras_tillbaka():

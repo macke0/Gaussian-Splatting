@@ -29,6 +29,15 @@ att sätta emot, men vi har LiDAR-ytan. ``MAXIMUM_DRIFT`` och ``MAXIMUM_RADIUS``
 säger därför att en gaussare ska sitta på det som mätts upp och vara stor som en
 bit av det. Då finns inget billigt alternativ till att bli skarp.
 
+Ytan de hålls vid är den *städade* — ``connected_surface``. Det är inte en
+detalj: ARKit lämnar flagor som svävar fritt mitt i rummet, och en gaussare på
+en flaga är brus som regeln ovan aldrig kan komma åt, för den sitter ju på
+"ytan". Bakningen kastade flagorna redan; splatten sådde på dem.
+
+**De startar som skivor, inte som klot.** En vägg beskrivs bäst av något platt
+som ligger an mot den. Vanlig 3DGS börjar med klot för att den inte vet var
+ytan är; vi vet, och ger dem ytans normal och en tunn tredje axel från början.
+
 **Poserna får glida, men bara för bildens skull.** De kommer från ARKit och
 duger till att mäta med. Till att *måla* med gör de det inte: reprojektionsfelet
 är 2–3 cm, vilket vid 1536 px är 15–20 pixlars glidning mellan två foton av samma
@@ -58,7 +67,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .bundle import Keyframe, ScanBundle
+from .atlas import vertex_normals
+from .bundle import Keyframe, ScanBundle, connected_surface
 
 log = logging.getLogger(__name__)
 
@@ -165,6 +175,14 @@ MAXIMUM_DRIFT = 0.02
 #: KD-trädet kostar en halv sekund för hela budgeten.
 SURFACE_INTERVAL = 250
 
+#: Hur tunn en startgaussare är tvärs ytan, som andel av avståndet till grannen.
+#: En vägg beskrivs av skivor, inte av klot: ett klot med radien r suddar över r
+#: åt alla håll, medan en skiva bara suddar längs väggen där färgen ändå är lik.
+#: Uppmätt innan startriktningen fanns: hälften av de tränade gaussarna var
+#: närmast klotformade (mellersta axeln 1,45 gånger den minsta i median), alltså
+#: hittade optimeraren aldrig dit själv.
+SEED_THICKNESS = 0.1
+
 
 def train(bundle: ScanBundle,
           iterations: int = DEFAULT_ITERATIONS,
@@ -195,14 +213,20 @@ def train(bundle: ScanBundle,
     if not frames:
         raise ValueError("skanningen innehåller inga foton att träna på")
 
-    means, scales = _seed(bundle, max_splats)
+    # Ytan gaussarna både sås på och hålls vid, utan ARKits lösa flagor. Samma
+    # yta som bakningen använder — annars blir flagorna brus i luften som
+    # ``MAXIMUM_DRIFT`` inte kan se, eftersom de räknas som yta.
+    surface, faces = connected_surface(bundle.mesh)
+    log.info("ytan att träna mot: %d hörn av skanningens %d",
+             len(surface), len(bundle.mesh.positions))
+
+    means, scales, quats = _seed(surface, vertex_normals(surface, faces), max_splats)
     log.info("startar från %d punkter på LiDAR-ytan", len(means))
 
     parameters = torch.nn.ParameterDict({
         "means": torch.nn.Parameter(torch.tensor(means, device=device)),
         "scales": torch.nn.Parameter(torch.tensor(np.log(scales), device=device)),
-        "quats": torch.nn.Parameter(torch.tensor(
-            np.tile([1.0, 0.0, 0.0, 0.0], (len(means), 1)).astype(np.float32), device=device)),
+        "quats": torch.nn.Parameter(torch.tensor(quats, device=device)),
         "opacities": torch.nn.Parameter(torch.full(
             (len(means),), float(np.log(INITIAL_OPACITY / (1 - INITIAL_OPACITY))), device=device)),
         # Grått är en ärligare gissning än svart: förlusten drar det åt rätt
@@ -225,10 +249,8 @@ def train(bundle: ScanBundle,
 
     strategy, state = _densification(budget) if densify else (None, None)
 
-    # Ytan som gaussarna hålls vid. Hela LiDAR-ytan, inte de utglesade
-    # startpunkterna: det som ska hindras är drift ut i rummet, och då gäller
-    # varje mätt punkt.
-    surface = np.unique(bundle.mesh.positions.reshape(-1, 3), axis=0).astype(np.float32)
+    # Hela ytan, inte de utglesade startpunkterna: det som ska hindras är drift
+    # ut i rummet, och då gäller varje mätt punkt.
     tree = cKDTree(surface)
 
     views = [_view(frame, device) for frame in frames]
@@ -454,20 +476,52 @@ def _device() -> str:
     return "cuda"
 
 
-def _seed(bundle: ScanBundle, max_splats: int) -> tuple[np.ndarray, np.ndarray]:
-    """Startpunkter ur LiDAR-ytan, med skala satt av grannavståndet."""
+def _seed(positions: np.ndarray, normals: np.ndarray,
+          max_splats: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Startpunkter ur LiDAR-ytan: platta skivor som ligger an mot väggen.
+
+    Skalan sätts av avståndet till grannen, riktningen av ytans normal. Båda är
+    kända — det är hela vinsten med att ha skannat rummet — och en optimerare som
+    får börja med rätt form behöver aldrig hitta dit genom att först bli suddig.
+    """
     from scipy.spatial import cKDTree
 
-    positions = np.unique(bundle.mesh.positions.reshape(-1, 3), axis=0).astype(np.float32)
+    positions, index = np.unique(positions.reshape(-1, 3), axis=0, return_index=True)
+    positions = positions.astype(np.float32)
+    normals = normals[index]
     if len(positions) > max_splats:
-        index = np.random.default_rng(0).choice(len(positions), max_splats, replace=False)
-        positions = positions[index]
+        picked = np.random.default_rng(0).choice(len(positions), max_splats, replace=False)
+        positions, normals = positions[picked], normals[picked]
 
     # En gaussare ska täcka ungefär hålet till sin granne, annars syns nätet.
     distance, _ = cKDTree(positions).query(positions, k=2)
     spacing = np.maximum(distance[:, 1], 1e-3).astype(np.float32)
-    scales = np.repeat(spacing[:, None] * 0.5, 3, axis=1)
-    return positions, scales
+
+    radius = spacing[:, None] * 0.5
+    scales = np.concatenate([radius, radius, radius * SEED_THICKNESS], axis=1)
+    return positions, scales.astype(np.float32), _aligned(normals)
+
+
+def _aligned(normals: np.ndarray) -> np.ndarray:
+    """Kvaternioner som vrider den lokala z-axeln till ytans normal.
+
+    Den tredje skalan är den tunna, så det är z som ska peka rakt ut ur väggen.
+    Formen är den kortaste vridningen mellan två enhetsvektorer; den halva
+    vinkeln kommer ur att kvaternionen redan är halva rotationen.
+    """
+    normals = normals / np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-8)
+
+    quats = np.zeros((len(normals), 4), np.float32)
+    quats[:, 0] = 1.0 + normals[:, 2]
+    quats[:, 1] = -normals[:, 1]
+    quats[:, 2] = normals[:, 0]
+
+    # Pekar normalen rakt nedåt är vridningen ett halvt varv och axeln obestämd.
+    # Vilken axel i planet som helst duger då; formeln ovan ger noll.
+    flipped = normals[:, 2] < -1 + 1e-6
+    quats[flipped] = [0.0, 1.0, 0.0, 0.0]
+
+    return (quats / np.linalg.norm(quats, axis=1, keepdims=True)).astype(np.float32)
 
 
 def _view(frame: Keyframe, device: str, camera_from_world: np.ndarray | None = None) -> dict:
