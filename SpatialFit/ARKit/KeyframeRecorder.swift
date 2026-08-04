@@ -52,7 +52,15 @@ final class KeyframeRecorder {
 
     /// - Parameter maximumCount: fotobudgeten. Tar den slut mitt i skanningen
     ///   saknar resten av rummet bild, och ytorna målas från fel håll.
-    init(directory: URL, maximumCount: Int = 40) {
+    ///
+    ///   Låg på 40 så länge fotona bara skulle blanda färg per texel — då
+    ///   räcker det att varje yta syns i något foto. Splatten ställer en helt
+    ///   annan fråga: den ska gå att TITTA på från ett håll ingen fotade, och
+    ///   det klarar den bara om fotona ligger tätt. Uppmätt på det riktiga
+    ///   rummet, mot fyra undanhållna foton: 9 foton ger felet 0,168, 18 ger
+    ///   0,121 och 36 ger 0,102. Kurvan lutar fortfarande vid 36, alltså var
+    ///   det taket som band — inte antalet gaussare, inte antalet steg.
+    init(directory: URL, maximumCount: Int = 120) {
         self.directory = directory
         self.maximumCount = maximumCount
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -97,18 +105,23 @@ final class KeyframeRecorder {
         return value >= median * sharpnessFloor
     }
 
-    /// 30 cm eller 20° från den senaste bilden. Under det ser man i praktiken
+    /// 20 cm eller 12° från den senaste bilden. Under det ser man i praktiken
     /// samma yta från samma håll.
+    ///
+    /// Låg på 30 cm och 20°, vilket räcker för att blanda färg men inte för att
+    /// kunna vrida sig i splatten: mellan två foton som står 20° isär finns inga
+    /// mellanliggande vyer att luta sig mot, och splatten fyller mellanrummet
+    /// med streck. Se `maximumCount` för mätningen.
     private func hasMovedEnough(to pose: simd_float4x4) -> Bool {
         guard let previous = keyframes.last?.worldFromCamera else { return true }
 
         let movement = simd_distance(SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z),
                                      SIMD3(previous.columns.3.x, previous.columns.3.y, previous.columns.3.z))
-        if movement > 0.30 { return true }
+        if movement > 0.20 { return true }
 
         let forward = SIMD3<Float>(-pose.columns.2.x, -pose.columns.2.y, -pose.columns.2.z)
         let previousForward = SIMD3<Float>(-previous.columns.2.x, -previous.columns.2.y, -previous.columns.2.z)
-        return simd_dot(forward, previousForward) < cos(20 * .pi / 180)
+        return simd_dot(forward, previousForward) < cos(12 * .pi / 180)
     }
 
     /// En färdig bild som ännu inte bestämts vara värd att spara.

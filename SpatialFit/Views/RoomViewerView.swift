@@ -186,7 +186,9 @@ struct RoomViewerView: View {
                 case .plainOnly(let reason):
                     Text(reason)
                 case .ready where splat != nil && showsSplat:
-                    Text("Splat · dra för att vrida, nyp för att gå in i rummet")
+                    // Splatvyn kan inte lämna rummet — den stämmer bara
+                    // inifrån. Se `SplatRoomView.reach`.
+                    Text("Splat · dra för att se dig omkring, nyp för att komma närmare")
                 case .ready where splat != nil:
                     // Den bakade ytan är alltid mjukare än splatten som målade
                     // den. Ligger en splat på disk ska ingen tro att smetet är

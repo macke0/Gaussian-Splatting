@@ -85,6 +85,19 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     /// mellan mesh och splat inte hoppar.
     private static let fieldOfView: Float = 60 * .pi / 180
 
+    /// Hur långt ut mot väggen kameran får gå, som andel av vägen dit.
+    ///
+    /// Meshen går att titta på utifrån — den är en yta och ser likadan ut från
+    /// båda hållen. Splatten gör det inte. Den är passad mot foton tagna inne i
+    /// rummet, och utanför väggen tittar man på baksidan av ytor som ingen
+    /// kamera sett: ett mjölkigt moln med regnbågskanter, vilket är precis vad
+    /// vyn visade när kameran ställdes 1,9 rumsradier ut.
+    ///
+    /// Uppmätt på ett riktigt rum: fotona togs inom 1,5 m från sin egen
+    /// medelpunkt medan rummet mäter 3,6 m i radie. Det är alltså bara den
+    /// innersta tredjedelen splatten någonsin blivit visad.
+    private static let reach: Float = 0.35
+
     /// Läser filen utanför huvudtråden och lämnar över den bit för bit.
     ///
     /// Två saker gjorde laddningen kännbar. Filen lästes in i sin helhet innan
@@ -176,15 +189,31 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
 
     // MARK: - Kameran
 
-    /// Kameran kretsar kring rummets mitt, samma bana som `RoomSceneController`.
+    /// Kameran kretsar kring rummets mitt, samma bana som `RoomSceneController`
+    /// — men stannar innanför väggarna. Se `reach`.
     private var viewMatrix: simd_float4x4 {
-        let eye = center + distance * SIMD3(cos(pitch) * sin(yaw),
-                                            sin(pitch),
-                                            cos(pitch) * cos(yaw))
+        let direction = SIMD3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw))
+        let eye = center + min(distance, reach(along: direction)) * direction
         // Splatten ligger i ARKits värld, Y uppåt. Vanliga 3DGS-filer kommer
         // från COLMAP och står upp och ner — därför vänder MetalSplatters
         // exempelapp på dem. Våra behöver ingen sådan vändning.
         return Self.look(from: eye, at: center, up: SIMD3(0, 1, 0))
+    }
+
+    /// Så långt kameran får gå åt ett håll innan den är utanför rummet.
+    ///
+    /// Rummets låda växer medan filen läses, så gränsen räknas om varje
+    /// bildruta i stället för att sparas.
+    private func reach(along direction: SIMD3<Float>) -> Float {
+        guard let lowest, let highest else { return distance }
+
+        var wall = Float.greatestFiniteMagnitude
+        for axis in 0..<3 where abs(direction[axis]) > 1e-5 {
+            let side = direction[axis] > 0 ? highest[axis] : lowest[axis]
+            wall = min(wall, (side - center[axis]) / direction[axis])
+        }
+        // Aldrig ända in i mitten: kameran och målpunkten får inte sammanfalla.
+        return max(wall * Self.reach, 0.1)
     }
 
     /// Tar emot en färdig bit: renderaren börjar rita och rummets låda växer.
