@@ -59,10 +59,16 @@ archive = zipfile.ZipFile(RemoteFile(URL))
 clouds = [info for info in archive.infolist()
           if info.filename.endswith("point_cloud.ply")]
 clouds.sort(key=lambda info: info.file_size)
-for info in clouds[:6]:
-    print(f"{info.file_size / 1e6:8.1f} MB  {info.filename}")
+for info in clouds:
+    print(f"{info.file_size / 1e6:8.1f} MB  {info.filename.split('/')[0]}")
 
-chosen = clouds[0]
+# Scennamnet som andra argument. `train` är ett FÖREMÅL man går runt, alltså
+# raka motsatsen till ett rum: kameran tittar inåt mot mitten i stället för
+# utåt mot väggarna. Vill man veta hur ett rum borde se ut är `drjohnson` och
+# `playroom` de närmaste — riktiga rum, filmade inifrån precis som våra.
+WANTED = sys.argv[2] if len(sys.argv) > 2 else None
+chosen = next((info for info in clouds
+               if info.filename.split("/")[0] == WANTED), clouds[0])
 scene = chosen.filename.split("/")[0]
 print(f"\nhämtar {chosen.filename} ({chosen.file_size / 1e6:.1f} MB)")
 destination = OUT / "benchmark.ply"
