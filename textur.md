@@ -99,6 +99,24 @@ Två saker måste vara rätt för att provet ska säga något:
   vill ha ett rått mål (`matchingTraining`); en främmande fil matas in orörd och
   vill ha `.bgra8Unorm_srgb`. Fel val ger en mörk och övermättad bild.
 
+## Referensrummen är bättre än vårt — men inte heller perfekta
+
+`train` var ett föremål man går RUNT. Provet gjordes om med Inrias inomhusrum,
+som ställer samma fråga som vi: `drjohnson`, `playroom`, `kitchen`. De renderas
+bättre än vårt rum, men inte fotorealistiskt, och de tappar skärpa så fort
+kameran lämnar en av sina egna poser.
+
+Två svar i ett:
+
+- **Taket är lägre än "perfekt".** Referensimplementationen på ett städat
+  dataset med hundratals systemkameror når inte dit heller. Ett mål som lyder
+  "skarpt som ett foto ur vilken vinkel som helst" är alltså ingen kravlista
+  utan en önskan. Rätt mål är att en nisch går att se och bedöma.
+- **Sfäriska harmoniker är slutgiltigt avfärdade.** `drjohnson` är tränad med
+  SH-grad 3 och vårt rum med grad 0 — men MetalSplatter läser bara `sh0`, så
+  BÅDA ritades utan vinkelberoende färg. Skillnaden kan därför omöjligt vara SH.
+  Det som skiljer är geometri, postäthet och fotokvalitet.
+
 ## Fotobudgeten band, inte handen som skannade
 
 När renderaren väl var frikänd stod bara indatan kvar, och det första svaret var
