@@ -140,6 +140,45 @@ Träningen höll alla foton som float32 på kortet, 21 MB styck — vid 300 blir
 6,4 GB bara i foton. De ligger som uint8 nu och räknas om i det steg som drar
 dem: 1,6 GB, och omräkningen syns inte mot rasteriseringen.
 
+## Budgeten mättas vid 680k — MCMC och ytspärren motarbetar varandra
+
+Skanning med 297 foton och full täckning (`coverage_check.py`: median 100 % per
+foto, både golv och tak i meshen). Tränade 2 000 000 gaussare, exporten behöll
+682 495. Uppdelat på villkoren i `_trimmed`:
+
+| villkor | antal |
+|---|---|
+| utanför rummet | **0** |
+| under `MINIMUM_OPACITY` | 1 317 505 |
+
+Lådtestet binder alltså aldrig — `MAXIMUM_DRIFT` garanterar redan det. Och de
+svaga är genuint svaga: median 0,0098, 90:e percentilen 0,0351. Att sänka golvet
+tar tillbaka dimman, inte skärpan.
+
+Alltså är **budgeten mättad**: taket på 2 M ger 682k användbara, vilket ligger
+på kurvans 58 %. Ett högre tak ger inte fler.
+
+Varför syns i `drog tillbaka`:
+
+| steg | gaussare | drogs tillbaka |
+|---|---|---|
+| 5 500 | 2 000 000 | 1 550 912 (78 %) |
+| 29 500 | 2 000 000 | 549 541 (27 %) |
+
+MCMC:s hela mekanism är att flytta slocknade gaussare dit felet är störst.
+Ytspärren flyttar dem sedan igen, varje steg. Den omplacerade hamnar inte där
+MCMC ville, hjälper inte, slocknar på nytt och flyttas igen — en snurr som
+förbrukar två tredjedelar av budgeten utan att ge en enda synlig gaussare. Samma
+kvot mättes vid 400k-taket (114k av 400k, 28,5 %), så det har aldrig varit
+åtgärdat, bara uppskalat.
+
+Nästa steg är därför ingen konstant, utan att sluta låta reglerna slåss: låt
+omplaceringen välja destination PÅ den mätta ytan, så har projektionen ingenting
+att ångra. Oprövat.
+
+Samma körning, för protokollet: poserna flyttade sig 11,0 mm i median (max
+21,5), exponeringsrättelsen spände 0,69–1,15 gånger. Båda gör alltså något.
+
 ## Radietaket är inte längre bindande
 
 Om av på hela rummet vid 2 M-budgeten, 30 000 steg, undanhållna foton:
