@@ -603,10 +603,23 @@ def _trimmed(model: SplatModel, bundle: ScanBundle) -> SplatModel:
     corners = bundle.mesh.positions.reshape(-1, 3)
     low, high = corners.min(axis=0) - ROOM_MARGIN, corners.max(axis=0) + ROOM_MARGIN
 
-    keep = (np.all((model.means >= low) & (model.means <= high), axis=1)
-            & (model.opacities >= np.log(MINIMUM_OPACITY / (1 - MINIMUM_OPACITY))))
+    inside = np.all((model.means >= low) & (model.means <= high), axis=1)
+    visible = model.opacities >= np.log(MINIMUM_OPACITY / (1 - MINIMUM_OPACITY))
+    keep = inside & visible
 
-    log.info("behåller %d av %d gaussare", int(keep.sum()), len(model))
+    # Vilket villkor som band, och hur nära golvet de svaga låg. Skillnaden
+    # avgör vad ett höjt tak är värt: ligger de strax under MINIMUM_OPACITY
+    # kastas en modell som träningen räknade med, medan opacitet nära noll
+    # betyder att ytan är mättad och att taket inte längre binder.
+    alpha = 1 / (1 + np.exp(-model.opacities))
+    log.info("behåller %d av %d gaussare (%d utanför rummet, %d för svaga)",
+             int(keep.sum()), len(model), int((~inside).sum()), int((~visible).sum()))
+    weak = alpha[~visible]
+    if len(weak):
+        log.info("de svagas opacitet: median %.4f, 90:e percentilen %.4f, "
+                 "%.1f %% över halva golvet",
+                 float(np.median(weak)), float(np.percentile(weak, 90)),
+                 100 * float((weak > MINIMUM_OPACITY / 2).mean()))
     return dataclasses.replace(model,
                                means=model.means[keep],
                                quats=model.quats[keep],
