@@ -116,7 +116,7 @@ final class KeyframeRecorder {
         return value >= median * sharpnessFloor
     }
 
-    /// 12 cm eller 8° från den senaste bilden. Under det ser man i praktiken
+    /// 3 cm eller 8° från den senaste bilden. Under det ser man i praktiken
     /// samma yta från samma håll.
     ///
     /// Låg på 30 cm och 20°, vilket räcker för att blanda färg men inte för att
@@ -128,12 +128,18 @@ final class KeyframeRecorder {
     /// var aldrig den som avgjorde. Med budgeten på 300 är det tvärtom: tröskeln
     /// är det som bestämmer hur tätt fotona kan ligga, och tätt är hela poängen
     /// — se `maximumCount` för mätningen av vad grannfoton gör med skärpan.
+    ///
+    /// Talet är därefter satt mot en RIKTIG skanning, inte mot en tänkt: en
+    /// användare orkar inte filma i tre minuter, och 12 cm gav då bara 141 foton
+    /// av budgetens 300. Nedmätt i steg — 12 cm gav 141, 8 cm 182, 5 cm 213 och
+    /// 3 cm 297. Tröskeln ska med andra ord vara så låg att `maximumCount` är
+    /// det som binder, annars betalar man för en budget man inte fyller.
     private func hasMovedEnough(to pose: simd_float4x4) -> Bool {
         guard let previous = keyframes.last?.worldFromCamera else { return true }
 
         let movement = simd_distance(SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z),
                                      SIMD3(previous.columns.3.x, previous.columns.3.y, previous.columns.3.z))
-        if movement > 0.12 { return true }
+        if movement > 0.03 { return true }
 
         let forward = SIMD3<Float>(-pose.columns.2.x, -pose.columns.2.y, -pose.columns.2.z)
         let previousForward = SIMD3<Float>(-previous.columns.2.x, -previous.columns.2.y, -previous.columns.2.z)

@@ -110,7 +110,27 @@ DEFAULT_EXTRA_VIEWS = 2
 #: ett filformat. Det var PLY-formatets 68 byte per gaussare som satte det förra
 #: taket på 400 000; SPZ tar 20 byte, så samma nedladdning bär tre gånger fler
 #: — se ``write_spz``.
-PHONE_SPLAT_BUDGET = 2_000_000
+#:
+#: Men budgeten är INTE längre den som binder, och det svepet ovan mätte i själva
+#: verket ``MAXIMUM_RADIUS`` genom budgeten: fler gaussare på samma yta tvingar
+#: fram mindre gaussare. Mätt var för sig, med ``tools/splat_check.py`` mot var
+#: tionde foto, är budgeten nästan verkningslös och radien allt:
+#:
+#: ===========  ========  ==========  =======
+#: radietak     budget    gaussare    skärpa
+#: ===========  ========  ==========  =======
+#: 5 cm         2 M         530 264    52,5 %
+#: 2 cm         2 M         779 189    55,0 %
+#: 8 mm         2 M       1 729 853    70,3 %
+#: 8 mm         3 M       2 428 287    71,9 %
+#: 6 mm         3 M       2 738 817    82,4 %
+#: 4 mm         3 M       2 919 128   107,3 %
+#: ===========  ========  ==========  =======
+#:
+#: Halva miljonen extra gaussare vid oförändrad radie gav 1,6 procentenheter;
+#: en radie fyra gånger mindre gav arton. Budgeten är därför satt till vad
+#: radien behöver för att inte svälta, inget mer.
+PHONE_SPLAT_BUDGET = 3_000_000
 
 #: Nollte sfäriska harmoniken. Splat-visare lagrar färgen som SH-koefficient och
 #: räknar tillbaka den som ``0.5 + SH_DC * f_dc``.
@@ -215,7 +235,27 @@ ROOM_MARGIN = 1.0
 #: lägger en färgtvätt över halva rummet. Det sänker pixelfelet billigt och är
 #: precis vad ett dimmigt rum består av. Uppmätt på det riktiga rummet innan
 #: taket fanns: största radien var 1,46 m, och de tio största satt mitt i luften.
-MAXIMUM_RADIUS = 0.05
+#:
+#: **Det här är talet som avgör skärpan**, och det stod tio gånger för högt.
+#: Slutsatsen att taket "inte längre binder" drogs ur medianaxeln (20,8 mm), och
+#: medianen renderar inte bilden. Frågar man renderaren i stället — ``info`` från
+#: ``rasterization`` — blir svaret ett annat: vid 5 cm projicerar medianen till
+#: arton pixlars radie på en bild som är 1536 bred, och varje pixel täcks av 339
+#: gaussare. Det är inte en yta utan trehundra halvgenomskinliga lager, och
+#: blandningen av dem ÄR det pärlemorskimrande diset. De som täcker mest ligger
+#: dessutom klistrade mot taket: största halvaxel 4,8 cm av 5,0 tillåtna.
+#:
+#: Rummet kan alltså inte bli skarpare än den grövsta gaussaren, oavsett hur
+#: många de är — se tabellen vid ``PHONE_SPLAT_BUDGET``, där en fyra gånger
+#: mindre radie gav arton procentenheter och en halv miljon extra gaussare gav
+#: en och en halv.
+#:
+#: Fyra millimeter och inte sex, fast sex ligger närmare fotots egen kantstyrka:
+#: skärpetalet passerar hundra procent för att renderingen får ett korn som
+#: fotot saknar, alltså mäter det då två fel som delvis tar ut varandra.
+#: Bilderna skiljer dem åt — vid sex millimeter ligger diset kvar nedtill, vid
+#: fyra är väggen ren. Kornet är det mindre av de två felen.
+MAXIMUM_RADIUS = 0.004
 
 #: Hur långt från LiDAR-ytan en gaussare får driva. Ytan är mätt — en gaussare
 #: som svävar en decimeter ut i rummet representerar ingenting som finns där.
@@ -223,10 +263,17 @@ MAXIMUM_RADIUS = 0.05
 #: 91 % av den synliga massan, alltså var rummet mest dimma.
 MAXIMUM_DRIFT = 0.02
 
-#: Hur ofta de som drivit iväg dras tillbaka. Varje steg vore slöseri — en
-#: gaussare rör sig bråkdelar av en millimeter per steg — och frågan mot
-#: KD-trädet kostar en halv sekund för hela budgeten.
-SURFACE_INTERVAL = 250
+#: Hur ofta varje gaussare får leta upp sin ytpunkt på nytt. Själva klämningen
+#: sker VARJE steg — se ``_pulled_to_surface``; det är bara frågan till KD-trädet
+#: som är dyr, och den behövs bara när gaussarna bytt plats.
+#:
+#: Låg på 250 med motiveringen att en gaussare rör sig bråkdelar av en millimeter
+#: per steg. Den motiveringen gällde gradienten, inte MCMC: strategin skakar
+#: lägena med ett brus som skalas mot kovariansen, och en slumpvandring över 250
+#: steg når √250 gånger så långt som ett steg. Uppmätt blev det 78 % av budgeten
+#: som fick ryckas tillbaka vid steg 5 500 — alltså slängdes fyra gaussare av
+#: fem flera centimeter, om och om igen, och de flesta slocknade av det.
+SURFACE_INTERVAL = 100
 
 #: Hur tunn en startgaussare är tvärs ytan, som andel av avståndet till grannen.
 #: En vägg beskrivs av skivor, inte av klot: ett klot med radien r suddar över r
@@ -306,6 +353,8 @@ def train(bundle: ScanBundle,
     # Hela ytan, inte de utglesade startpunkterna: det som ska hindras är drift
     # ut i rummet, och då gäller varje mätt punkt.
     tree = cKDTree(surface)
+    anchor_points = torch.tensor(surface, device=device)
+    anchors = None
 
     views = [_view(frame, device) for frame in frames]
     generator = np.random.default_rng(0)
@@ -328,7 +377,6 @@ def train(bundle: ScanBundle,
         appearance_optimizer = torch.optim.Adam([appearance], lr=APPEARANCE_LEARNING_RATE,
                                                 weight_decay=APPEARANCE_DECAY)
 
-    pulled = 0
     for step in range(iterations):
         index = int(generator.integers(len(views)))
         view = views[index]
@@ -383,14 +431,24 @@ def train(bundle: ScanBundle,
         with torch.no_grad():
             parameters["colors"].clamp_(0.0, 1.0)
             parameters["scales"].clamp_(max=float(np.log(MAXIMUM_RADIUS)))
-            if step % SURFACE_INTERVAL == 0 or step == iterations - 1:
-                moved, pulled = _pulled_to_surface(
-                    parameters["means"].detach().cpu().numpy(), tree, surface)
-                if pulled:
-                    parameters["means"].copy_(torch.tensor(moved, device=device))
+
+            means = parameters["means"]
+            # Ankarna letas upp på nytt när de blivit fel: strategin flyttar de
+            # slocknade gaussarna och lägger till nya, och en gaussare som
+            # teleporterats hör inte längre till den ytpunkt den hörde till förut.
+            if (anchors is None or len(anchors) != len(means)
+                    or step % SURFACE_INTERVAL == 0):
+                _, nearest = tree.query(means.detach().cpu().numpy(), k=1, workers=-1)
+                anchors = anchor_points[torch.as_tensor(nearest, device=device)]
+            moved, pulled = _pulled_to_surface(means, anchors)
+            if pulled:
+                means.copy_(moved)
 
         if step % 500 == 0:
-            log.info("steg %d/%d, förlust %.4f, %d gaussare, %d drog tillbaka",
+            # Sista talet är hur många som klämdes i DET steget, inte sedan
+            # sist. Ett litet tal betyder att gränsen håller löpande; ett stort
+            # att gaussarna hinner fara iväg mellan klämningarna.
+            log.info("steg %d/%d, förlust %.4f, %d gaussare, %d klämda",
                      step, iterations, float(loss.detach()), len(parameters["means"]), pulled)
 
     if appearance is not None:
@@ -567,26 +625,32 @@ def _smallest_three(quats: np.ndarray) -> np.ndarray:
             & np.uint32(0xFF)).astype(np.uint8)
 
 
-def _pulled_to_surface(points: np.ndarray, tree, surface: np.ndarray) -> tuple[np.ndarray, int]:
-    """De gaussare som drivit för långt ut, dragna tillbaka mot den mätta ytan.
+def _pulled_to_surface(points, anchors, radius: float = MAXIMUM_DRIFT):
+    """De gaussare som drivit för långt från sin ytpunkt, dragna tillbaka.
 
-    Dras till skalet ``MAXIMUM_DRIFT`` från ytan och inte hela vägen ned på den:
+    ``anchors`` är den mätta ytpunkt varje gaussare hör till, en per rad. Att
+    skicka in den i stället för att fråga ett KD-träd här inne är hela poängen:
+    frågan kostar en halv sekund för hela budgeten och kan bara ställas några
+    hundra gånger, medan klämningen är ren aritmetik och kan göras varje steg.
+    Och den MÅSTE göras varje steg — MCMC skakar lägena med ett brus som över
+    tvåhundrafemtio steg summerar till flera centimeter, långt utanför gränsen.
+
+    Dras till skalet ``radius`` från ytan och inte hela vägen ned på den:
     riktningen den drev åt är oftast rätt — det är avståndet som är fel — och en
     gaussare som slängs ned på ytan varje gång tappar det den lärt sig.
 
     Att göra det här i stället för att straffa avståndet i förlusten är ett val:
     ytan är *mätt*, inte gissad, så det finns inget att väga den mot.
-    """
-    distance, nearest = tree.query(points, k=1)
-    drifted = distance > MAXIMUM_DRIFT
-    if not drifted.any():
-        return points, 0
 
-    outward = points[drifted] - surface[nearest[drifted]]
-    outward /= np.linalg.norm(outward, axis=1, keepdims=True)
-    moved = points.copy()
-    moved[drifted] = surface[nearest[drifted]] + outward * MAXIMUM_DRIFT
-    return moved, int(drifted.sum())
+    Skriven med de operationer numpy och torch har gemensamma, så samma rader
+    körs på kortet i träningen och mot en handräknad yta i testerna.
+    """
+    outward = points - anchors
+    # Golvet är där för att en gaussare som ligger exakt på sitt ankare ska ge
+    # kvoten oändligt och inte noll delat med noll. Den klipps ändå till ett.
+    distance = ((outward * outward).sum(-1) ** 0.5).clip(1e-12, None)
+    shrink = (radius / distance).clip(None, 1.0)
+    return anchors + outward * shrink[..., None], int((shrink < 1.0).sum())
 
 
 def _trimmed(model: SplatModel, bundle: ScanBundle) -> SplatModel:

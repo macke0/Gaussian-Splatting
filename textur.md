@@ -244,8 +244,76 @@ Kontrollen finns som mönster: projicera `connected_surface` in i en keyframes
 pose och räkna punkter per ruta. Ett smetigt område med noll ytpunkter är ett
 hål i indata och inget annat.
 
+## Skärpan satt i radietaket, inte i antalet
+
+Fyra saker prövades i tur och ordning mot samma skanning (297 foton), var och en
+med bara EN variabel ändrad. De tre första gav ingenting, och det är de som är
+värda att komma ihåg:
+
+| ändring | gaussare | skärpa | dimma |
+|---|---:|---:|---:|
+| utgångsläget | 682 495 | 54,6 % | 15,6 % |
+| ytspärren klämmer varje steg | 530 264 | 52,5 % | 6,5 % |
+| straffen på opacitet och skala borta | 1 273 245 | 51,2 % | 5,0 % |
+| kamerorna låsta vid ARKits poser | 439 991 | 40,2 % | 7,0 % |
+
+Att 2,4 gånger fler gaussare gav SÄMRE skärpa är hela poängen: antalet var inte
+det som band. Låsta poser föll till 40 % trots att de mäts i sina egna poser,
+vilket friar mätningen från att vara artefakten.
+
+Först när talen tog slut renderades bilden och tittades på. Då syns det: ett
+pärlemorskimrande dis över väggarna, i **gsplats egen rendering på servern** —
+alltså inte telefonens shader, som friats separat. Frågan gick sedan till
+renderaren i stället för till modellen, via `info` från `rasterization`:
+
+> Vid 5 cm radietak projicerar mediangaussaren till **18 pixlars radie** på en
+> bild som är 1536 bred, och varje pixel täcks av **339 gaussare**. De som täcker
+> mest ligger klistrade mot taket: största halvaxel 4,8 cm av 5,0 tillåtna.
+
+Rummet var alltså inte en yta utan trehundra halvgenomskinliga lager, och
+blandningen av dem ÄR diset. Taket hade tidigare avfärdats med att medianaxeln
+låg på 20,8 mm — men medianen renderar inte bilden, det gör de största.
+
+| radietak | budget | gaussare | skärpa |
+|---|---|---:|---:|
+| 5 cm | 2 M | 530 264 | 52,5 % |
+| 2 cm | 2 M | 779 189 | 55,0 % |
+| 8 mm | 2 M | 1 729 853 | 70,3 % |
+| 8 mm | 3 M | 2 428 287 | 71,9 % |
+| 6 mm | 3 M | 2 738 817 | 82,4 % |
+| 4 mm | 3 M | 2 919 128 | 107,3 % |
+
+En halv miljon extra gaussare vid oförändrad radie gav 1,6 procentenheter; en
+fyra gånger mindre radie gav arton. Det tidigare budgetsvepet (220k/455k/771k →
+40/49/58 %) mätte i själva verket radien genom budgeten — fler gaussare på samma
+yta tvingar fram mindre.
+
+Valet blev 4 mm och budget 3 M. Skärpetalet passerar hundra procent där, vilket
+inte betyder skarpare än verkligheten utan att renderingen fått ett korn fotot
+saknar — två fel som delvis tar ut varandra. **Bilderna, inte talen, skilde 4
+från 6 mm:** vid sex millimeter ligger diset kvar nedtill, vid fyra är väggen
+ren. Kornet är det mindre av felen.
+
+Ytspärren skrevs samtidigt om till att klämma varje steg mot en cachad ytpunkt
+i stället för att projicera var 250:e. Den gav ingen skärpa, men den gör
+gränsen sann: dimman är nu **0,0 %** i alla modeller, mot 15,6 % förut. Skälet
+den behövdes är att MCMC skakar lägena med ett brus som över 250 steg
+slumpvandrar √250 gånger längre än ett steg — 78 % av budgeten fick ryckas
+tillbaka flera centimeter vid steg 5 500, mot 3 % per steg nu.
+
 ## Rutiner
 
+- **Sätt siffror på splatten med `server/tools/splat_check.py`** innan du tror på
+  en ändring. Träningsloggens förlust duger inte: den gäller ETT slumpat foto och
+  svänger mer mellan två utskrifter än två modeller skiljer sig åt.
+- **När talen tar slut, rendera bilden och titta på den.** Fyra mätningar i rad
+  pekade åt fel håll här; jämförelsebilden gav svaret på en gång.
+- **Fråga renderaren, inte modellen.** `info` från `rasterization` bär `radii`
+  och `depths` per gaussare — projicerad storlek på skärmen är det som avgör vad
+  man ser, och den går inte att räkna ut ur halvaxlarna i huvudet.
+- **Mät dimma med marginal** (`> MAXIMUM_DRIFT * 1.5`). Träningen klämmer de
+  drivna till precis gränsen, så utan marginal räknas varje klämd gaussare som
+  dimma och måttet visar 6,8 % för en modell som per konstruktion har noll.
 - **Kolla vilken färgkälla bakningen faktiskt körde** innan du tror på en
   förbättring: `grep "tränade" /tmp/bake.log`. Saknas raden var det `blend`.
 - **Döm aldrig bakningen ur atlasbilden — rendera meshen** med

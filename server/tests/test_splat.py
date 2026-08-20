@@ -167,23 +167,23 @@ def test_gaussare_som_svavar_ut_i_rummet_dras_tillbaka():
     # Lådans vägg ligger på x = 1. En gaussare mitt i rummet svävar alltså fritt.
     surface = np.unique(bundle().mesh.positions.reshape(-1, 3), axis=0).astype(np.float32)
     points = np.array([[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]], np.float32)
+    anchors = surface[cKDTree(surface).query(points, k=1)[1]]
 
-    moved, pulled = _pulled_to_surface(points, cKDTree(surface), surface)
+    moved, pulled = _pulled_to_surface(points, anchors)
 
     assert pulled == 1
     # Den som redan satt på ytan rörs inte.
     assert np.allclose(moved[0], points[0])
     # Den fria hamnar precis vid gränsen, i den riktning den drev åt.
-    assert np.isclose(np.linalg.norm(moved[1] - surface[np.argmin(
-        np.linalg.norm(surface - points[1], axis=1))]), MAXIMUM_DRIFT, atol=1e-5)
+    assert np.isclose(np.linalg.norm(moved[1] - anchors[1]), MAXIMUM_DRIFT, atol=1e-5)
 
 
 def test_ytan_lamnas_ifred_nar_ingen_drivit():
-    from scipy.spatial import cKDTree
-
     surface = np.unique(bundle().mesh.positions.reshape(-1, 3), axis=0).astype(np.float32)
 
-    moved, pulled = _pulled_to_surface(surface.copy(), cKDTree(surface), surface)
+    # Varje gaussare sitter på sitt eget ankare — alltså noll avstånd, vilket är
+    # fallet klämningen delar med noll i om golvet i nämnaren inte finns.
+    moved, pulled = _pulled_to_surface(surface.copy(), surface)
 
     assert pulled == 0
     assert np.allclose(moved, surface)
