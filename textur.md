@@ -179,7 +179,12 @@ att ångra. Oprövat.
 Samma körning, för protokollet: poserna flyttade sig 11,0 mm i median (max
 21,5), exponeringsrättelsen spände 0,69–1,15 gånger. Båda gör alltså något.
 
-## Radietaket är inte längre bindande
+## Radietaket är inte längre bindande — FEL, se nedan
+
+**Den här slutsatsen är kullkastad** av "Skärpan satt i radietaket, inte i
+antalet". Den står kvar för att felet i resonemanget är värt att känna igen:
+allt nedan är riktigt mätt, men mätt på medianaxeln, och medianen renderar inte
+bilden. Frågar man renderaren i stället täcks varje pixel av 339 gaussare.
 
 Om av på hela rummet vid 2 M-budgeten, 30 000 steg, undanhållna foton:
 
@@ -198,7 +203,9 @@ fler gaussare väljer träningen redan små — att tvinga dem mindre ger bara h
 - **Straffen i förlusten** (opacitet, skala) — ingen mätbar skillnad på skärpan.
 - **Sfäriska harmoniker över grad 0** — MetalSplatter har ingen SH-väg alls, så
   koefficienterna hade ändå aldrig nått fram till skärmen.
-- **Platta skivor vid seedningen** — en pixels vinst, inom bruset.
+- **Platta skivor vid SEEDNINGEN** — en pixels vinst, inom bruset. Formen måste
+  hållas under träningen för att betyda något, se `MAXIMUM_THICKNESS`; startvärdet
+  optimeras bort på några hundra steg.
 - **Radietak under 5 cm** — se avsnittet ovan. Mindre penslar utan fler penslar
   är glesare täckning, inte mer detalj.
 - **Färre steg** — sämre på allt.
@@ -288,11 +295,56 @@ fyra gånger mindre radie gav arton. Det tidigare budgetsvepet (220k/455k/771k �
 40/49/58 %) mätte i själva verket radien genom budgeten — fler gaussare på samma
 yta tvingar fram mindre.
 
-Valet blev 4 mm och budget 3 M. Skärpetalet passerar hundra procent där, vilket
-inte betyder skarpare än verkligheten utan att renderingen fått ett korn fotot
-saknar — två fel som delvis tar ut varandra. **Bilderna, inte talen, skilde 4
-från 6 mm:** vid sex millimeter ligger diset kvar nedtill, vid fyra är väggen
-ren. Kornet är det mindre av felen.
+Valet blev först 4 mm och budget 3 M. Skärpetalet passerar hundra procent där,
+vilket inte betyder skarpare än verkligheten utan att renderingen fått ett korn
+fotot saknar — två fel som delvis tar ut varandra. **Bilderna, inte talen,
+skilde 4 från 6 mm:** vid sex millimeter ligger diset kvar nedtill, vid fyra är
+väggen ren. Kornet bedömdes vara det mindre av felen.
+
+Det var fel bedömning, och det syntes först på telefonen.
+
+## Kornet var klot — gaussarna måste hållas platta
+
+4 mm-splatten på telefonen såg ut som ull: hela rummet fibrigt, som stucco.
+Serverbilden hade samma korn, men i 600 pixlars bredd såg det ut som en
+struktur man kunde leva med. **Bedöm aldrig kornighet i en nedskalad bild** —
+zooma in på en bit slät vägg i full upplösning.
+
+Två förklaringar prövades och föll:
+
+- **Hål mellan gaussarna.** Nej: täckningen var 51 bildytor och bara 0,85 % av
+  bilden helt tom. Det finns gott om överlapp.
+- **Närplanet.** Nej: gsplats förval är 1 cm, men kameran kom aldrig närmare än
+  **26 cm** från en yta under hela skanningen, så inget projiceras uppblåst.
+
+Svaret satt i FORMEN. Halvaxlarna vid 4 mm:
+
+> mellersta axeln **1,1** gånger den minsta, största **1,00** gånger den
+> mellersta — alltså klot, inte skivor, alla tre axlar tryckta mot taket.
+
+`MAXIMUM_RADIUS` klämmer bara den största axeln, så när taket sänks samlas allt
+mot det och rundas av. En vägg byggd av 4 mm klot är bucklig av sig själv, och
+att sänka taket ytterligare gör bara kloten mindre. `SEED_THICKNESS` sår dem
+redan som skivor, men startvärdet optimeras bort på några hundra steg — **formen
+måste hållas under träningen, inte bara sättas vid starten.**
+
+Åtgärden är `MAXIMUM_THICKNESS`, ett eget tak på den TUNNASTE axeln, klämt varje
+steg. Vilken av de tre som är tunnast bestäms av kvaternionen och byts under
+träningen, så den måste letas upp med `argmin` varje gång.
+
+| radietak | tjocklek | gaussare | skärpa |
+|---|---|---:|---:|
+| 2 cm | 2 mm | 989 117 | 58,7 % |
+| 1 cm | 1 mm | 2 145 976 | 68,4 % |
+| 8 mm | 1 mm | 2 517 633 | 74,2 % |
+| 6 mm | 1 mm | 2 786 113 | 86,1 % |
+| 4 mm | 0,8 mm | 2 935 585 | 115,1 % |
+
+Platthet 1,1 → **7,4**, och skärpan 82 → 86 % vid samma radie. Valet blev
+**6 mm × 1 mm, budget 3 M**: kornet nästan borta, diset kvar bara som en aning.
+
+Straffen mättes om samtidigt och är nu helt verkningslösa (86,1 mot 86,3 utan
+dem) — ytspärren har tagit över deras jobb.
 
 Ytspärren skrevs samtidigt om till att klämma varje steg mot en cachad ytpunkt
 i stället för att projicera var 250:e. Den gav ingen skärpa, men den gör
@@ -308,6 +360,12 @@ tillbaka flera centimeter vid steg 5 500, mot 3 % per steg nu.
   svänger mer mellan två utskrifter än två modeller skiljer sig åt.
 - **När talen tar slut, rendera bilden och titta på den.** Fyra mätningar i rad
   pekade åt fel håll här; jämförelsebilden gav svaret på en gång.
+- **Titta i FULL upplösning på en bit slät vägg.** Kornighet försvinner i en
+  nedskalad översiktsbild och kom tillbaka först på telefonen.
+- **Skärpetalet mäter två fel med olika tecken** — dis drar det nedåt, korn
+  uppåt. Ett tal över 100 % är sämre än ett strax under, inte bättre.
+- **Mät formen, inte bara storleken:** `mid/min` på halvaxlarna. Ett tak på den
+  största axeln gör gaussarna till klot om ingenting håller den minsta.
 - **Fråga renderaren, inte modellen.** `info` från `rasterization` bär `radii`
   och `depths` per gaussare — projicerad storlek på skärmen är det som avgör vad
   man ser, och den går inte att räkna ut ur halvaxlarna i huvudet.

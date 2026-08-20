@@ -116,20 +116,28 @@ DEFAULT_EXTRA_VIEWS = 2
 #: fram mindre gaussare. Mätt var för sig, med ``tools/splat_check.py`` mot var
 #: tionde foto, är budgeten nästan verkningslös och radien allt:
 #:
-#: ===========  ========  ==========  =======
-#: radietak     budget    gaussare    skärpa
-#: ===========  ========  ==========  =======
-#: 5 cm         2 M         530 264    52,5 %
-#: 2 cm         2 M         779 189    55,0 %
-#: 8 mm         2 M       1 729 853    70,3 %
-#: 8 mm         3 M       2 428 287    71,9 %
-#: 6 mm         3 M       2 738 817    82,4 %
-#: 4 mm         3 M       2 919 128   107,3 %
-#: ===========  ========  ==========  =======
+#: ==========  ==========  =======  ==========  ========
+#: radietak    tjocklek    budget   gaussare      skärpa
+#: ==========  ==========  =======  ==========  ========
+#: 5 cm        fri            2 M     530 264    52,5 %
+#: 2 cm        fri            2 M     779 189    55,0 %
+#: 8 mm        fri            2 M   1 729 853    70,3 %
+#: 8 mm        fri            3 M   2 428 287    71,9 %
+#: 6 mm        fri            3 M   2 738 817    82,4 %
+#: 4 mm        fri            3 M   2 919 128   107,3 %
+#: 2 cm        2 mm           3 M     989 117    58,7 %
+#: 1 cm        1 mm           3 M   2 145 976    68,4 %
+#: 8 mm        1 mm           3 M   2 517 633    74,2 %
+#: 6 mm        1 mm           3 M   2 786 113    86,1 %
+#: 4 mm        0,8 mm         3 M   2 935 585   115,1 %
+#: ==========  ==========  =======  ==========  ========
 #:
 #: Halva miljonen extra gaussare vid oförändrad radie gav 1,6 procentenheter;
 #: en radie fyra gånger mindre gav arton. Budgeten är därför satt till vad
-#: radien behöver för att inte svälta, inget mer.
+#: radien behöver för att inte svälta, inget mer — vid 6 mm blir 2,79 M av
+#: 3 M kvar, så den räcker precis.
+#:
+#: Talen ÖVER hundra procent är inte bättre än de under, se ``MAXIMUM_RADIUS``.
 PHONE_SPLAT_BUDGET = 3_000_000
 
 #: Nollte sfäriska harmoniken. Splat-visare lagrar färgen som SH-koefficient och
@@ -250,12 +258,30 @@ ROOM_MARGIN = 1.0
 #: mindre radie gav arton procentenheter och en halv miljon extra gaussare gav
 #: en och en halv.
 #:
-#: Fyra millimeter och inte sex, fast sex ligger närmare fotots egen kantstyrka:
-#: skärpetalet passerar hundra procent för att renderingen får ett korn som
-#: fotot saknar, alltså mäter det då två fel som delvis tar ut varandra.
-#: Bilderna skiljer dem åt — vid sex millimeter ligger diset kvar nedtill, vid
-#: fyra är väggen ren. Kornet är det mindre av de två felen.
-MAXIMUM_RADIUS = 0.004
+#: Sex millimeter, och inte mindre, är en avvägning mellan två fel som drar åt
+#: var sitt håll: stora gaussare ger diset ovan, små ger korn, för då räcker de
+#: inte till en sammanhängande yta. **Skärpetalet fångar båda felen som ETT tal
+#: och kan därför inte välja mellan dem** — det passerar hundra procent när
+#: kornet tar över, alltså är 115 % en sämre modell än 86 %. Bara bilden skiljer
+#: dem åt; zooma in på en bit slät vägg.
+MAXIMUM_RADIUS = 0.006
+
+#: Hur tjock en gaussare får vara tvärs sin tunnaste led.
+#:
+#: ``MAXIMUM_RADIUS`` klämmer bara den STÖRSTA axeln, så allt samlas mot taket
+#: och rundas av: uppmätt vid 4 mm var mellersta axeln 1,1 gånger den minsta och
+#: största 1,00 gånger den mellersta. Alltså klot, inte skivor. En vägg byggd av
+#: fyra millimeters klot är bucklig av sig själv, och det är den ulliga
+#: stucco-ytan telefonen visade. Att pressa radien ännu längre ned gör det värre
+#: — klotet blir bara mindre.
+#:
+#: ``SEED_THICKNESS`` sår dem redan som skivor, men det håller inte: taket är
+#: det enda som binder under träningen, och ett tak på största axeln säger
+#: ingenting om den minsta. Den här gränsen säger det i stället. Uppmätt blev
+#: mellersta axeln 7,4 gånger den minsta i stället för 1,1 — riktiga skivor —
+#: och skärpan steg från 82 till 86 % vid samma radie. En skiva som är bred
+#: längs väggen suddar bara där färgen ändå är lik.
+MAXIMUM_THICKNESS = 0.001
 
 #: Hur långt från LiDAR-ytan en gaussare får driva. Ytan är mätt — en gaussare
 #: som svävar en decimeter ut i rummet representerar ingenting som finns där.
@@ -431,6 +457,14 @@ def train(bundle: ScanBundle,
         with torch.no_grad():
             parameters["colors"].clamp_(0.0, 1.0)
             parameters["scales"].clamp_(max=float(np.log(MAXIMUM_RADIUS)))
+            # Och den tunnaste leden för sig, annars blir gaussaren ett klot mot
+            # radietaket. Vilken av de tre axlarna som är tunnast bestäms av
+            # kvaternionen och byts under träningen, så den måste letas upp varje
+            # gång i stället för att pekas ut en gång för alla.
+            thinnest = parameters["scales"].argmin(dim=1, keepdim=True)
+            parameters["scales"].scatter_(
+                1, thinnest, parameters["scales"].gather(1, thinnest)
+                .clamp(max=float(np.log(MAXIMUM_THICKNESS))))
 
             means = parameters["means"]
             # Ankarna letas upp på nytt när de blivit fel: strategin flyttar de
