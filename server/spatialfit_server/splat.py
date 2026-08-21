@@ -34,6 +34,12 @@ detalj: ARKit lämnar flagor som svävar fritt mitt i rummet, och en gaussare p�
 en flaga är brus som regeln ovan aldrig kan komma åt, för den sitter ju på
 "ytan". Bakningen kastade flagorna redan; splatten sådde på dem.
 
+Städad, men inte bara meshen: ankarmolnet är meshen *plus* varje LiDAR-djuppixel
+(``measured_points``). En spärr mot ytan är bara så god som ytan är fullständig,
+och meshen är en rekonstruktion som tappar gardiner, växter och soffkanter. Där
+den saknar yta finns ingen laglig plats för det fotot ser, och färgen smetas ut
+på väggen bakom som vit frost. Se ``measured_points`` för talen.
+
 **De startar som skivor, inte som klot, och skivan ska få vara tunn.** En vägg
 beskrivs bäst av något platt som ligger an mot den. Vanlig 3DGS börjar med klot
 för att den inte vet var ytan är; vi vet, och ger dem ytans normal och en tunn
@@ -83,7 +89,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .atlas import vertex_normals
-from .bundle import Keyframe, ScanBundle, connected_surface
+from .bundle import Keyframe, ScanBundle, connected_surface, measured_points
 
 log = logging.getLogger(__name__)
 
@@ -378,8 +384,20 @@ def train(bundle: ScanBundle,
 
     # Hela ytan, inte de utglesade startpunkterna: det som ska hindras är drift
     # ut i rummet, och då gäller varje mätt punkt.
-    tree = cKDTree(surface)
-    anchor_points = torch.tensor(surface, device=device)
+    #
+    # Och inte bara meshens punkter, utan varje LiDAR-djuppixel. Meshen är
+    # ARKits rekonstruktion och tappar gardiner, växter och soffkanter: nio
+    # procent av de rutor LiDAR såg saknade yta i den, och renderingsfelet var
+    # 2,4 gånger högre just där. Det var den vita frosten i förgrunden — utan
+    # laglig plats smetas det fotot ser ut på väggen bakom. Med djupkartorna
+    # med faller andelen till 2,8 procent. Sådden är kvar på meshen, som är det
+    # enda som har normaler.
+    anchor_cloud = np.concatenate(
+        [surface, measured_points(bundle.keyframes)]).astype(np.float32)
+    log.info("ankarmoln: %d punkter, varav %d ur djupkartorna",
+             len(anchor_cloud), len(anchor_cloud) - len(surface))
+    tree = cKDTree(anchor_cloud)
+    anchor_points = torch.tensor(anchor_cloud, device=device)
     anchors = None
 
     views = [_view(frame, device) for frame in frames]

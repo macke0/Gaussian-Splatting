@@ -232,7 +232,7 @@ opacitet × VOLYM och behöll de rundaste. En platt skiva som täcker en vägg s
 har liten volym och slängdes. Nu äger träningen taket. Mät `mid/min` för
 platthet, aldrig `max/min`.
 
-## Förgrundssmetet är ett hål i skanningen, inte i splatten
+## Förgrundssmetet är ett hål i skanningen, inte i splatten — halvrätt, se nedan
 
 Efter höjd budget är rummet skarpt utom i förgrundens golv, som smetar ut i
 radiella strimmor. Det är frestande att skylla på gaussarnas storlek. Mätningen
@@ -250,6 +250,10 @@ ytpunkt, som är väggen. Därav strimmorna. Åtgärden hör hemma i skanningen 
 Kontrollen finns som mönster: projicera `connected_surface` in i en keyframes
 pose och räkna punkter per ruta. Ett smetigt område med noll ytpunkter är ett
 hål i indata och inget annat.
+
+Slutsatsen om åtgärden var dock fel: hålet finns i *meshen*, inte i mätningen.
+LiDAR-djupkartorna såg det mesta av det meshen tappade, och de låg redan i
+skanningen. Se *Ytspärren var bara så god som ytan var fullständig*.
 
 ## Skärpan satt i radietaket, inte i antalet
 
@@ -353,6 +357,74 @@ den behövdes är att MCMC skakar lägena med ett brus som över 250 steg
 slumpvandrar √250 gånger längre än ett steg — 78 % av budgeten fick ryckas
 tillbaka flera centimeter vid steg 5 500, mot 3 % per steg nu.
 
+## Ytspärren var bara så god som ytan var fullständig
+
+Frosten som låg kvar efter 6 mm × 1 mm satt i **ankarytan, inte i gaussarna**.
+Meshen är ARKits rekonstruktion och tappar det som är tunt, blankt eller
+rörligt: gardiner, krukväxter, soffkanter. Mätt per ruta mot LiDAR-djupet
+saknade **9,0 %** av de rutor LiDAR såg någon yta i meshen alls, och
+renderingsfelet var där **2,41 gånger** högre (71,0 mot 29,4). Enskilda foton
+nådde 5,5 och 6,9 gånger.
+
+Det spelar roll just för att spärren är hård. Där ytan saknas finns ingen
+laglig plats för det fotot ser, så färgen smetas ut på väggen bakom.
+**Ju bättre spärren fungerar, desto värre straffar den ett hål i ytan.**
+
+Åtgärden är `bundle.measured_points`: varje LiDAR-djuppixel utfälld i världen,
+glesad till ett rutnät. Punkterna är mätta, inte gissade — till skillnad från
+att lätta på spärren. Ur samma skanning ger det 7,1 M punkter mot meshens 211k,
+alltså 34 gånger tätare.
+
+| ankaryta | tomma rutor | L1 | skärpa | klämda/steg |
+|---|---:|---:|---:|---:|
+| bara meshen | 9,0 % | 0,1321 | 86,1 % | ~152 000 |
+| **+ djupkartorna** | **2,8 %** | **0,1156** | **90,1 %** | **~28 000** |
+
+Att klämningarna föll femfaldigt är det egentliga beviset: spärren slåss inte
+längre med optimeraren, för gaussarna har någonstans lagligt att ta vägen.
+
+Kostnaden är 1,7 min på en 9-minutersbakning. Den mättes först till 28,7 min
+med slumppunkter spridda över rummet — **KD-träd ska tidmätas med frågor som
+ligger som datat gör**, tätt vid ytan, annars blir svaret 16 gånger fel.
+
+Det korrigerar slutsatsen i *Förgrundssmetet är ett hål i skanningen*: hålet är
+verkligt, men åtgärden hörde hemma i träningen och inte i skanningen. Datat
+fanns redan, det användes bara inte.
+
+## Frosten är ett skal, och måttet kan inte se den
+
+Kvar efter det ovanstående: vit frost på släta väggar. Felkartan (rendering,
+foto och felet som värmebild bredvid varandra) visar att felet sitter på
+**kanter** — fönsterkarm, blad, galler — medan de släta väggarna är nästan
+felfria. Ändå syns frosten just där.
+
+Förklaringen är att **väggen är vit och frosten är vit**. Den kostar nästan
+ingenting i L1, så varken måttet eller förlusten kan se den, och optimeraren
+har ingen anledning att rätta den. Avstånd till kameran (1,22 gångers spann)
+och antal foton som sett ytan (1,44) förklarar den inte heller.
+
+Massans fördelning mot den mätta ytan gör det:
+
+| < 2 mm | 2–5 mm | 5–10 mm | 1–2 cm | > 2 cm |
+|---:|---:|---:|---:|---:|
+| 1,4 % | 18,8 % | 46,4 % | 31,9 % | 1,4 % |
+
+Bara 1,4 % ligger an mot väggen. **78 % svävar 5–20 mm framför den** — ett
+luddigt skal, inte en yta. Dimmåttet börjar först vid 3 cm och missar hela
+saken.
+
+`MAXIMUM_DRIFT` = 2 cm var utrymme för meshens hål. Med ytan mätt behövs det
+inte: djupkartorna är överens med **varandra** på 5–7 mm (och en del av det är
+mätningens egen glesning), så spärren är minst fyra gånger lösare än datat
+kräver. Glesningen måste följa med ned — ett rutnät på 1 cm gör ankaret upp
+till 8,7 mm fel i sig och vore grövre än spärren det ska hålla.
+
+Utfällningen är verifierad mot sig själv: fäll ut en djupkarta och projicera
+tillbaka in i samma kamera ger **0,0001 px och 0,0000 mm**. Att LiDAR-punkterna
+ändå ligger 36 mm från meshen i median är alltså meshen som är utjämnad, inte
+matten som är fel. **Rundgångstesta en projektion innan du misstror datat** —
+och sortera inte om punkterna på vägen, `np.unique` gör det.
+
 ## Rutiner
 
 - **Sätt siffror på splatten med `server/tools/splat_check.py`** innan du tror på
@@ -369,6 +441,16 @@ tillbaka flera centimeter vid steg 5 500, mot 3 % per steg nu.
 - **Fråga renderaren, inte modellen.** `info` från `rasterization` bär `radii`
   och `depths` per gaussare — projicerad storlek på skärmen är det som avgör vad
   man ser, och den går inte att räkna ut ur halvaxlarna i huvudet.
+- **Mät det telefonen fick, inte det träningen hade.** PLY:n finns inte ens kvar
+  på disk efter en bakning; `splat_check.py` läser numera SPZ också. (Mätt är
+  kvantiseringen oskyldig — 86,1 % i båda — men det var en gissning innan.)
+- **Ett fel som syns men inte mäts sitter i något som liknar bakgrunden.** Vit
+  frost på vit vägg kostar nästan noll i L1. Mät då geometrin i stället: hur
+  massan fördelar sig mot ytan, inte hur bilden ser ut.
+- **Rundgångstesta projektionen innan du misstror datat**, och sortera inte om
+  punkterna på vägen — `np.unique` gör det, och testet ljuger då om matten.
+- **Tidmät KD-träd med frågor som ligger som datat gör.** Slumppunkter spridda
+  över rummet gav 16 gånger för hög kostnad och hade avfärdat rätt åtgärd.
 - **Mät dimma med marginal** (`> MAXIMUM_DRIFT * 1.5`). Träningen klämmer de
   drivna till precis gränsen, så utan marginal räknas varje klämd gaussare som
   dimma och måttet visar 6,8 % för en modell som per konstruktion har noll.
