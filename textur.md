@@ -419,6 +419,27 @@ mätningens egen glesning), så spärren är minst fyra gånger lösare än data
 kräver. Glesningen måste följa med ned — ett rutnät på 1 cm gör ankaret upp
 till 8,7 mm fel i sig och vore grövre än spärren det ska hålla.
 
+**Men att dra åt spärren är AVFÄRDAT, mätt.** Det låg nära till hands och gick
+åt fel håll:
+
+| spärr | rutnät | L1 | skärpa | bilden |
+|---|---|---:|---:|---|
+| **2 cm** | 1 cm | **0,1156** | 90,1 % | bäst |
+| 8 mm | 5 mm | 0,1238 | 86,6 % | mer frost, urvattnad tavelram |
+| 5 mm | 5 mm | 0,1308 | 90,7 % | färgat brus över hela väggen |
+
+Skalet komprimerades som avsett (bandet 1–2 cm gick 31,9 → 1,9 % vid 8 mm), men
+rummet blev sämre. Skälet är att ankarmolnet SJÄLVT är ett brusigt skal på
+5–7 mm: klämmer man hårt mot brus tvingas gaussarna sitta på bruset. Klämda per
+steg gick från 28 000 till 700 000 — spärren slogs med optimeraren igen.
+
+Att 5 mm har den HÖGSTA skärpesiffran och den SÄMSTA L1 är skolexemplet på att
+måttet mäter två fel med olika tecken. Siffran var korn.
+
+Kvar som obesvarat: massan riktar sig mot spärrens yttre skal oavsett var det
+sätts, alltså vill optimeraren aktivt skjuta gaussarna mot kameran. Det är
+samma incitament som gör att L1 belönar dimma, och det är inte löst.
+
 Utfällningen är verifierad mot sig själv: fäll ut en djupkarta och projicera
 tillbaka in i samma kamera ger **0,0001 px och 0,0000 mm**. Att LiDAR-punkterna
 ändå ligger 36 mm från meshen i median är alltså meshen som är utjämnad, inte
