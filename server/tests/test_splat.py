@@ -321,3 +321,44 @@ def test_spz_ar_mycket_mindre_an_ply(tmp_path):
 def test_okand_fargkalla_avvisas(tmp_path):
     with pytest.raises(ValueError, match="färgkälla"):
         bake_room(tmp_path, color_source="splatt")
+
+
+def test_kuloren_klams_mot_grannskapet_men_ljusheten_lamnas():
+    # Klämningen är ren aritmetik som ytspärren, men skriven i torch, och torch
+    # finns bara där träningen körs.
+    torch = pytest.importorskip("torch")
+    from spatialfit_server.splat import _limit_chroma, _neighbourhoods
+
+    # Fyra gaussare tätt ihop, alltså ett enda grannskap: tre neutralt grå och en
+    # kraftigt röd. Den fjärde är precis det färgbrus taket finns för.
+    means = torch.tensor([[0.0, 0.0, 0.0], [0.01, 0.0, 0.0],
+                          [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]])
+    colors = torch.tensor([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5],
+                           [0.5, 0.5, 0.5], [0.9, 0.5, 0.5]])
+    green = colors[:, 1].clone()
+
+    neighbourhood = _neighbourhoods(means, 0.25)
+    assert int(neighbourhood.max()) == 0, "alla fyra ska hamna i samma ruta"
+
+    _limit_chroma(colors, neighbourhood, 0.01)
+
+    # Ljusheten bärs av den gröna kanalen, och den får taket inte röra.
+    assert torch.allclose(colors[:, 1], green)
+    # Kvar får bara en hundradel av kulörskillnaden mot grannskapet stå åt vardera
+    # hållet, alltså två hundradelar mellan den rödaste och den blekaste.
+    chroma = colors[:, 0] - colors[:, 1]
+    assert float(chroma.max() - chroma.min()) <= 0.02 + 1e-6
+    # Den röda är fortfarande rödast — taket jämnar ut, det vänder inte.
+    assert int(chroma.argmax()) == 3
+
+
+def test_grannskapet_skiljer_pa_rutor():
+    torch = pytest.importorskip("torch")
+    from spatialfit_server.splat import _neighbourhoods
+
+    # En halv meter isär med en kvarts meters rutor: aldrig samma ruta.
+    means = torch.tensor([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0]])
+
+    neighbourhood = _neighbourhoods(means, 0.25)
+
+    assert len(torch.unique(neighbourhood)) == 3
