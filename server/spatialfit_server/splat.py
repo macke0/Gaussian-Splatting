@@ -300,6 +300,42 @@ MINIMUM_OPACITY = 0.05
 #: löser alltså en del av underbestämningen, inte hela.
 MINIMUM_ALPHA = 0.5
 
+#: Hur långt en gaussares kulör får avvika från sitt grannskaps. Noll stänger av.
+#:
+#: Uppmätt på användarens rum: på de rutor där FOTOT är jämnt ligger fotots egen
+#: kulörspridning på 0,74 grånivåer — väggen är i praktiken neutralgrå — medan
+#: renderingens är 4,42, alltså sex gånger så färgstark. Det är den pastellrosa
+#: och gröna fläckighet som setts hela vägen, och den är alltså INTE telefonens
+#: färgrum: den finns i serverns egen rendering, och den överlever att
+#: exponeringsrättelsen sugit upp fotonas vitbalans (0,91–1,25 i blått mot grönt).
+#:
+#: Kvar står bara gaussarnas egen färg: tre fria tal per gaussare, anpassade mot
+#: några få bildpunkter som femtio andra gaussare delar på. Ingenting i
+#: förlusten säger att två grannar på samma vägg ska ha samma nyans, så bruset i
+#: dem blir kulört. Taket säger det i stället, mot ljusheten säger det ingenting.
+#:
+#: Uppmätt: kulörspridningen på grå vägg går från 6,3 till 1,9 gånger fotots, och
+#: L1 rör sig inte (0,1163 mot 0,1167). Det syns tydligast där det finns färg att
+#: ha fel om: ett brunt parkettgolv renderades GRÖNT utan taket, och blir brunt
+#: med. Ljushetsbruset stiger något (4,4 till 5,0 gånger fotots) — samma
+#: underbestämning uttrycks i ljushet i stället — men kulört brus på en grå vägg
+#: är det som läses som pärlemorskimmer, och ljushetsbrus läses som yta.
+MAXIMUM_CHROMA = 0.005
+
+#: Hur stor ruta som räknas som en gaussares grannskap när kulören kläms.
+#:
+#: Satt först till 2 cm, ungefär tre gaussarbredder, och det tog bara sex procent
+#: av felet fast klämningen bevisligen bet: spridningen INOM rutan föll från 24,4
+#: till 2,6 grånivåer. Felet satt alltså på en annan skala. Delar man upp
+#: spridningen i den inom rutorna och den mellan deras medelvärden syns det: på
+#: 2 cm står 28 grånivåer MELLAN rutorna, och även på en halv meter återstår 15.
+#: Färgbruset är storskalig nyansdrift över väggen, inte gnistrande punktbrus.
+#:
+#: En kvarts meter är därför inte ett grannskap i geometrisk mening utan den
+#: skala felet lever på. Att riktiga färgkanter skulle plattas ut av det är mätt
+#: och obesannat — golvet ovan behöll sin gräns mot väggen.
+CHROMA_NEIGHBOURHOOD = 0.25
+
 #: Hur långt utanför skanningens egen låda en gaussare får ligga. MCMC:s brus
 #: slungar iväg ett par tusen stycken. De är osynliga men inte gratis: telefonen
 #: ställer kameran efter splattens utsträckning, och med dem kvar mätte rummet
@@ -461,6 +497,7 @@ def train(bundle: ScanBundle,
     tree = cKDTree(anchor_cloud)
     anchor_points = torch.tensor(anchor_cloud, device=device)
     anchors = None
+    neighbourhood = None
 
     views = [_view(frame, device) for frame in frames]
     generator = np.random.default_rng(0)
@@ -552,6 +589,13 @@ def train(bundle: ScanBundle,
                     min=float(np.log(MINIMUM_ALPHA / (1 - MINIMUM_ALPHA))))
 
             means = parameters["means"]
+            if MAXIMUM_CHROMA > 0:
+                # Rutnätet räknas om lika sällan som ytankarna: gaussarna rör sig
+                # bråkdelar av en rutstorlek mellan två omräkningar.
+                if neighbourhood is None or len(neighbourhood) != len(means) \
+                        or step % SURFACE_INTERVAL == 0:
+                    neighbourhood = _neighbourhoods(means, CHROMA_NEIGHBOURHOOD)
+                _limit_chroma(parameters["colors"], neighbourhood, MAXIMUM_CHROMA)
             # Ankarna letas upp på nytt när de blivit fel: strategin flyttar de
             # slocknade gaussarna och lägger till nya, och en gaussare som
             # teleporterats hör inte längre till den ytpunkt den hörde till förut.
@@ -770,6 +814,54 @@ def _pulled_to_surface(points, anchors, radius: float = MAXIMUM_DRIFT):
     distance = ((outward * outward).sum(-1) ** 0.5).clip(1e-12, None)
     shrink = (radius / distance).clip(None, 1.0)
     return anchors + outward * shrink[..., None], int((shrink < 1.0).sum())
+
+
+def _neighbourhoods(points, size: float):
+    """Vilken rutnätsruta varje gaussare hör till, som radnummer.
+
+    Grannskapet behövs bara för att kunna fråga vad omgivningen har för kulör,
+    och ett rutnät räcker till det: två gaussare som hamnar i samma ruta sitter
+    säkert nära varandra. Ett KD-träd skulle ge sannare grannar men kostar en
+    halv sekund per fråga för hela budgeten, medan det här är en avrundning.
+
+    Att rutorna är godtyckligt lagda gör inget: taket gäller mot rutans
+    medelvärde, och en gaussare som råkar hamna vid en rutkant jämförs mot en
+    något annan omgivning än sin närmaste. Bruset det ger är slumpmässigt och
+    försvinner över de hundratals gånger rutnätet läggs om under träningen.
+    """
+    import torch
+
+    keys = torch.floor(points.detach() / size).to(torch.int64)
+    return torch.unique(keys, dim=0, return_inverse=True)[1]
+
+
+def _limit_chroma(colors, neighbourhood, maximum: float) -> None:
+    """Klämmer varje gaussares kulör mot sitt grannskaps, på plats.
+
+    Ljusheten lämnas fri. Riktig yta har detalj i ljushet — skarvar, skuggor,
+    fogar — men nästan aldrig i kulör över någon centimeter; det är samma
+    egenskap som gör att JPEG kan halvera färgupplösningen utan att någon ser
+    det. Gaussarnas färg är däremot tre fria tal, så bruset i dem blir kulört,
+    och en grå vägg uppmättes sex gånger så färgstark som fotots.
+
+    Kulören uttrycks som avstånd från den gröna kanalen, eftersom grönt bär det
+    mesta av ljusheten. Bara rött och blått ändras, alltså rörs inte ljusheten.
+    """
+    import torch
+
+    groups = int(neighbourhood.max()) + 1
+    chroma = torch.stack([colors[:, 0] - colors[:, 1], colors[:, 2] - colors[:, 1]], dim=1)
+
+    total = torch.zeros((groups, 2), device=colors.device, dtype=colors.dtype)
+    total.index_add_(0, neighbourhood, chroma)
+    count = torch.zeros(groups, device=colors.device, dtype=colors.dtype)
+    count.index_add_(0, neighbourhood, torch.ones_like(neighbourhood, dtype=colors.dtype))
+    average = (total / count[:, None])[neighbourhood]
+
+    limited = average + (chroma - average).clamp(-maximum, maximum)
+    colors[:, 0] = colors[:, 1] + limited[:, 0]
+    colors[:, 2] = colors[:, 1] + limited[:, 1]
+    colors.clamp_(0.0, 1.0)
 
 
 def _trimmed(model: SplatModel, bundle: ScanBundle) -> SplatModel:
