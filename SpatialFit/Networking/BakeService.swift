@@ -87,6 +87,14 @@ struct BakeService: Sendable {
     private static let deadline: Duration = .seconds(3600)
     private static let pollInterval: Duration = .seconds(2)
 
+    /// Hur stor en bit av en nedladdning är, och hur länge en bit får ta innan
+    /// den räknas som förlorad. Fyra megabyte är litet nog att inte kosta mer än
+    /// en halv minut att fråga om, och stort nog att en splat blir ett dussin
+    /// frågor i stället för tusen.
+    private static let chunkSize = 4 << 20
+    private static let chunkTimeout: TimeInterval = 60
+    private static let attemptsPerChunk = 6
+
     /// Packar `files` och laddar upp dem. Svarar när servern tagit emot jobbet,
     /// inte när det är klart: bakningen fortsätter där oavsett vad telefonen gör.
     func start(uploading files: [URL],
@@ -181,14 +189,72 @@ struct BakeService: Sendable {
         throw Failure.timedOut
     }
 
-    private func download(_ name: String, of job: String, to destination: URL) async throws {
+    /// Hämtar en fil i bitar och lägger den i `destination`.
+    ///
+    /// Hela filen i ett svep höll inte. Splatten är 47 MB mot texturens 16, och
+    /// på ett nät som tappar stora paket står strömmen still en stund här och
+    /// där — URLSession räknar en minut utan byte som ett fel och kastar då allt
+    /// som redan kommit fram. Uppmätt: texturen kom, splatten kom aldrig.
+    ///
+    /// Varje bit frågas därför för sig med `Range`, och en bit som inte kom fram
+    /// frågas om från samma byte. Det som ligger på disk får ligga kvar.
+    func download(_ name: String, of job: String, to destination: URL) async throws {
         let url = server.appending(path: "bake").appending(path: job).appending(path: name)
-        let (temporary, response) = try await URLSession.shared.download(from: url)
-        try Self.check(response, nil)
+        let manager = FileManager.default
+
+        // Skrivs vid sidan av och byter namn först när filen är hel: en avbruten
+        // nedladdning ska inte se ut som ett bakat rum nästa gång appen startar.
+        let partial = destination.appendingPathExtension("part")
+        try? manager.removeItem(at: partial)
+        guard manager.createFile(atPath: partial.path, contents: nil) else {
+            throw Failure.server("kunde inte skriva \(name)")
+        }
+        let handle = try FileHandle(forWritingTo: partial)
+        defer { try? handle.close() }
+
+        var offset = 0
+        var total = Int.max
+        while offset < total {
+            var attempts = 0
+            while true {
+                do {
+                    let (chunk, length) = try await Self.fetch(url, from: offset)
+                    try handle.write(contentsOf: chunk)
+                    offset += chunk.count
+                    total = length
+                    break
+                } catch let error as URLError where Self.isTransient(error) {
+                    attempts += 1
+                    guard attempts < Self.attemptsPerChunk else { throw error }
+                    try await Task.sleep(for: Self.pollInterval)
+                }
+            }
+        }
+        try handle.close()
 
         // Filen ersätter en tidigare bakning; `moveItem` vägrar skriva över.
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temporary, to: destination)
+        try? manager.removeItem(at: destination)
+        try manager.moveItem(at: partial, to: destination)
+    }
+
+    /// Frågar efter en bit från och med `offset`. Svarar med bitens byte och
+    /// hela filens längd, som servern skickar i `Content-Range`.
+    private static func fetch(_ url: URL, from offset: Int) async throws -> (Data, Int) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = chunkTimeout
+        request.setValue("bytes=\(offset)-\(offset + chunkSize - 1)",
+                         forHTTPHeaderField: "Range")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try check(response, data)
+
+        guard let http = response as? HTTPURLResponse, http.statusCode == 206,
+              let range = http.value(forHTTPHeaderField: "Content-Range"),
+              let total = Int(range.split(separator: "/").last ?? ""),
+              !data.isEmpty else {
+            throw Failure.server("servern skickar inte \(url.lastPathComponent) i bitar")
+        }
+        return (data, total)
     }
 
     // MARK: - Packning
