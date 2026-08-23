@@ -226,17 +226,79 @@ APPEARANCE_DECAY = 1e-6
 SSIM_WEIGHT = 0.2
 
 #: MCMC-strategin håller antalet gaussare konstant genom att flytta de döda dit
-#: bilden är fel. Utan de här två straffen driver den mot många nästan
-#: genomskinliga och stora gaussare, eftersom en dimma sänker förlusten billigt.
-#: Vikterna är gsplats egna.
-OPACITY_PENALTY = 0.01
+#: bilden är fel. Utan de här straffen driver den mot många nästan genomskinliga
+#: och stora gaussare, eftersom en dimma sänker förlusten billigt. Vikten är
+#: gsplats egen.
 SCALE_PENALTY = 0.01
+
+#: Hur hårt en gaussare tvingas välja mellan att täcka och att inte finnas.
+#:
+#: Här satt förr ett straff på opaciteten rakt av, alltså en kraft NEDÅT. Det är
+#: fel väg, och uppmätt gjorde det ingenting alls (86,1 mot 86,3 procents skärpa
+#: utan straffen) — ytspärren gör redan deras jobb.
+#:
+#: Det verkliga felet syns när man frågar renderaren i stället för modellen: vid
+#: sex millimeters radietak täcks varje pixel av 55 gaussare, medan medelalfat
+#: 0,30 betyder att 6,4 lager räcker för att släcka nittio procent av ljuset
+#: bakom. Ytan är alltså åtta gånger mer redundant än den behöver vara, och varje
+#: överflödigt lager är ännu en fritt optimerad färg. Femtiofem färger per pixel
+#: har oändligt många blandningar som ser lika ut från träningsvyerna och skiljer
+#: sig från nya — det är skimret, och det är samma underbestämning som de 339
+#: lagren vid fem centimeter, bara mildare.
+#:
+#: Straffet är störst vid alfa 0,5 och noll i båda ändarna, så det säger inte
+#: vilket håll en gaussare ska ta, bara att den inte får bli hängande halvvägs.
+#: De som faller mot noll plockas av ``MINIMUM_OPACITY`` och flyttas av MCMC dit
+#: bilden är fel; de som når upp mot ett skymmer resten, och då är det färre
+#: färger som avgör pixeln.
+OPACITY_POLARITY = 0.01
 
 #: Svagare än så syns en gaussare inte ens som en aning. Nästan halva en
 #: MCMC-tränad splat hamnar där, eftersom straffet ovan trycker ned alla som
 #: inte behövs. Uppmätt på det riktiga rummet: att kasta dem nästan halverar
 #: filen och kostar 0,14 dB — och den renderade bilden blir marginellt SKARPARE.
 MINIMUM_OPACITY = 0.05
+
+#: Golv för opaciteten under träningen. Noll stänger av det.
+#:
+#: ``OPACITY_POLARITY`` ovan säger åt gaussarna att välja sida men tvingar dem
+#: inte, och uppmätt gjorde straffen ingenting alls. Varje gång ett mjukt straff
+#: mätts verkningslöst i det här rummet har ett hårt tak i stället bitit direkt
+#: — radien, tjockleken, ytspärren. Det här är samma grepp på opaciteten:
+#: klämningen sker varje steg, efter optimerarens, precis som de andra.
+#:
+#: Det som ska minska är inte antalet gaussare utan antalet FÄRGER som avgör en
+#: pixel. Med alfa 0,30 krävs 6,4 lager för att skymma bakgrunden och 55 ligger
+#: där; med golvet höjt räcker en handfull, och resten hamnar bakom en yta som
+#: faktiskt är ogenomskinlig. Risken åt andra hållet är att en nästan täckande
+#: främre gaussare stryper gradienten till allt bakom, vilket är exakt varför
+#: ``INITIAL_OPACITY`` är låg — därför ett golv, inte ett startvärde: gaussarna
+#: får bli genomskinliga i början och tvingas upp först under träningen.
+#:
+#: Uppmätt på användarens rum, mot undanhållna foton:
+#:
+#: ===== ========= ====== ====== ==================
+#: golv  gaussare  L1     skärpa spridning på vägg
+#: ===== ========= ====== ====== ==================
+#: 0     2 790 512 0,1156  89,7% 5,20×
+#: 0,50  3 000 000 0,1163  98,9% 4,38×
+#: 0,90  3 000 000 0,1174 103,7% 4,32×
+#: ===== ========= ====== ====== ==================
+#:
+#: Sista kolumnen är ``tools/korn2.py``: hur mycket renderingen skiftar lokalt
+#: där FOTOT är jämnt, delat med fotots eget skift. Ett vore en vägg lika lugn
+#: som verklighetens; fem är den ulliga ytan telefonen visar. Måttet finns för
+#: att skärpetalet inte kan skilja sudd från korn — de drar åt var sitt håll och
+#: räknas som ett tal.
+#:
+#: Noll femtio och noll nittio är lika bra på kornet, så det lägre väljs: det
+#: lämnar mer kvar åt optimeraren, och skärpan landar strax under hundra i
+#: stället för att skjuta förbi. Filen växer 42 → 46 MB, eftersom ingen gaussare
+#: längre faller under ``MINIMUM_OPACITY`` och gallras.
+#:
+#: Kvar står att väggen ändå skiftar fyra gånger mer än verklighetens. Golvet
+#: löser alltså en del av underbestämningen, inte hela.
+MINIMUM_ALPHA = 0.5
 
 #: Hur långt utanför skanningens egen låda en gaussare får ligga. MCMC:s brus
 #: slungar iväg ett par tusen stycken. De är osynliga men inte gratis: telefonen
@@ -444,8 +506,10 @@ def train(bundle: ScanBundle,
             # över hela rummet: många halvgenomskinliga klumpar sänker
             # pixelfelet utan att någon yta blir skarp. Straffen gör dimman dyr,
             # så budgeten går till täta gaussare som sitter på en yta.
+            alpha = torch.sigmoid(parameters["opacities"])
             loss = (loss
-                    + OPACITY_PENALTY * torch.sigmoid(parameters["opacities"]).abs().mean()
+                    # Fyran gör att termen är ett vid alfa 0,5 och noll i ändarna.
+                    + OPACITY_POLARITY * (4 * alpha * (1 - alpha)).mean()
                     + SCALE_PENALTY * torch.exp(parameters["scales"]).abs().mean())
 
         for optimizer in optimizers.values():
@@ -483,6 +547,9 @@ def train(bundle: ScanBundle,
             parameters["scales"].scatter_(
                 1, thinnest, parameters["scales"].gather(1, thinnest)
                 .clamp(max=float(np.log(MAXIMUM_THICKNESS))))
+            if MINIMUM_ALPHA > 0:
+                parameters["opacities"].clamp_(
+                    min=float(np.log(MINIMUM_ALPHA / (1 - MINIMUM_ALPHA))))
 
             means = parameters["means"]
             # Ankarna letas upp på nytt när de blivit fel: strategin flyttar de
