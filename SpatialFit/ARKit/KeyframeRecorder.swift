@@ -71,7 +71,14 @@ final class KeyframeRecorder {
     ///   Taket är alltså vårt, inte skanningens: vid fem bildrutor i sekunden
     ///   erbjuder tre minuters skanning niohundra tillfällen. Kostnaden är
     ///   uppladdningen — knappt en halv megabyte per keyframe med djupet.
-    init(directory: URL, maximumCount: Int = 300) {
+    ///
+    ///   Därför niohundra: med 3 cm-tröskeln band budgeten vid 297 av 300, så
+    ///   det var taket och inte skanningen som avgjorde. Alla andra hävstänger
+    ///   är uppmätta och avförda — opacitetsgolv, kulörtak, drift, skärpeviktning
+    ///   — medan den här kurvan lutade vid 36 och vid 120 och aldrig har fått
+    ///   sluta luta. Priset är en uppladdning på ett par hundra megabyte och en
+    ///   träning som växer ungefär i takt med antalet foton.
+    init(directory: URL, maximumCount: Int = 900) {
         self.directory = directory
         self.maximumCount = maximumCount
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

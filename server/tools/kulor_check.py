@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from spatialfit_server.bundle import ScanBundle
 from spatialfit_server.splat import synthetic_keyframes
-from splat_check import read_spz
+from splat_check import read_ply, read_spz
 
 BOX = 48
 PATCHES = 12
@@ -48,7 +48,10 @@ held_out = list(range(0, len(bundle.keyframes), 10))
 print(f"{'modell':<20} {'kulörspridning':>15} {'fotots':>8} {'kvot':>6}")
 for argument in sys.argv[2:]:
     path = Path(argument)
-    views = synthetic_keyframes(read_spz(path), bundle, extra_views=0)
+    # Väljer på filändelsen som de andra måtten: `train_splat` skriver PLY, och
+    # bara det som skickats till telefonen är SPZ.
+    model = read_spz(path) if path.suffix == ".spz" else read_ply(path)
+    views = synthetic_keyframes(model, bundle, extra_views=0)
     ours, theirs = [], []
     for index in held_out:
         rendered = views[index].image
