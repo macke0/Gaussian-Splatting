@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from spatialfit_server.bundle import ScanBundle  # noqa: E402
 from spatialfit_server.splat import synthetic_keyframes  # noqa: E402
-from splat_check import read_spz  # noqa: E402
+from splat_check import read_ply, read_spz  # noqa: E402
 
 BOX = 48       # rutans sida i pixlar
 PATCHES = 12   # så många släta rutor per foto
@@ -53,7 +53,10 @@ held_out = list(range(0, len(bundle.keyframes), 10))
 print(f"{'modell':<20} {'lokal spridning mot fotots':>28}")
 for argument in sys.argv[2:]:
     path = Path(argument)
-    views = synthetic_keyframes(read_spz(path), bundle, extra_views=0)
+    # Väljer på filändelsen som de andra måtten. En tränad modell skrivs som PLY
+    # av `train_splat`; bara det som skickats till telefonen är SPZ.
+    model = read_spz(path) if path.suffix == ".spz" else read_ply(path)
+    views = synthetic_keyframes(model, bundle, extra_views=0)
     ratios = []
     for index in held_out:
         rendered = _grey(views[index].image)
