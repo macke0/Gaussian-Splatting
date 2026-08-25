@@ -9,76 +9,49 @@ blandningen inte kan ge:
 * bruset jämnas ut, eftersom varje splat sett rummet från många håll,
 * exponeringshoppen försvinner, eftersom en och samma modell renderar allt.
 
-Två val skiljer den här träningen från 3DGS som det brukar se ut:
+Detta skiljer träningen från 3DGS som det brukar se ut:
 
 **Ingen sfärisk harmonik.** Färgen är vy-oberoende (SH-grad 0). En diffus
 texturatlas kan ändå inte bära vy-beroende ljus, och med högre grad hade en
 spegling från ett enda håll bakats in i väggen som en fläck.
 
-**Förtätning trots tät start.** Vanlig 3DGS börjar med glesa SfM-punkter och
-måste klona sig fram till täckning. Vi börjar i LiDAR-ytans hörn — geometrin är
-redan känd och tät, vilket är hela poängen med att ha skannat rummet. Men en
-gaussare per LiDAR-hörn är ett tak på detaljnivån, och det taket ligger under
-fotots: 200 000 hörn mot 40 foton à 1536 px. Därför får gsplat dela och klona
-där bilden inte stämmer. Mätningen rörs inte — den kommer aldrig härifrån.
+**Tät start i LiDAR-ytans hörn**, inte glesa SfM-punkter. Men en gaussare per
+hörn är ett tak på detaljnivån som ligger UNDER fotots (200 000 hörn mot foton
+à 1536 px), så gsplat får ändå dela och klona där bilden inte stämmer.
 
-**Gaussarna hålls vid den mätta ytan.** Fritt tränad lägger sig en splat gärna
-som dimma mellan kameran och väggen: många halvgenomskinliga klumpar mitt i
-rummet sänker pixelfelet billigare än en skarp yta gör. Vanlig 3DGS har inget
-att sätta emot, men vi har LiDAR-ytan. ``MAXIMUM_DRIFT`` och ``MAXIMUM_RADIUS``
-säger därför att en gaussare ska sitta på det som mätts upp och vara stor som en
-bit av det. Då finns inget billigt alternativ till att bli skarp.
+**Gaussarna hålls vid den mätta ytan.** Fritt tränad lägger sig en splat som
+dimma mellan kameran och väggen — det sänker pixelfelet billigare än en skarp
+yta. Vanlig 3DGS har inget att sätta emot; vi har LiDAR-ytan, och
+``MAXIMUM_DRIFT`` och ``MAXIMUM_RADIUS`` säger att en gaussare ska sitta på det
+som mätts upp och vara stor som en bit av det.
 
-Ytan de hålls vid är den *städade* — ``connected_surface``. Det är inte en
-detalj: ARKit lämnar flagor som svävar fritt mitt i rummet, och en gaussare på
-en flaga är brus som regeln ovan aldrig kan komma åt, för den sitter ju på
-"ytan". Bakningen kastade flagorna redan; splatten sådde på dem.
+Ytan är den *städade* (``connected_surface``) plus varje LiDAR-djuppixel
+(``measured_points``). Båda leden behövs: ARKit lämnar flagor mitt i rummet där
+en gaussare är lagligt placerat brus, och meshen tappar gardiner, växter och
+soffkanter — där finns ingen laglig plats för det fotot ser, och färgen smetas
+ut på väggen bakom som vit frost.
 
-Städad, men inte bara meshen: ankarmolnet är meshen *plus* varje LiDAR-djuppixel
-(``measured_points``). En spärr mot ytan är bara så god som ytan är fullständig,
-och meshen är en rekonstruktion som tappar gardiner, växter och soffkanter. Där
-den saknar yta finns ingen laglig plats för det fotot ser, och färgen smetas ut
-på väggen bakom som vit frost. Se ``measured_points`` för talen.
+**De startar som skivor, inte klot.** Vi vet var ytan är och ger dem dess normal
+och en tunn tredje axel. Mellersta axeln blir fjorton gånger den minsta. Mät
+``max/mid`` och ``mid/min`` var för sig — ``max/min`` skiljer inte nål från skiva.
 
-**De startar som skivor, inte som klot, och skivan ska få vara tunn.** En vägg
-beskrivs bäst av något platt som ligger an mot den. Vanlig 3DGS börjar med klot
-för att den inte vet var ytan är; vi vet, och ger dem ytans normal och en tunn
-tredje axel från början. Mätt på ett riktigt rum blir den mellersta axeln
-fjorton gånger den minsta — en halv millimeter tvärs väggen. Ett golv under
-den kvoten gör skivorna åtta gånger tjockare och bilden mjölkig, så frestas
-man att sätta ett: mät ``max/mid`` och ``mid/min`` var för sig. ``max/min``
-kan inte skilja en nål från en skiva.
+**Poserna får glida, men bara för bildens skull.** ARKits reprojektionsfel är
+2–3 cm, alltså 15–20 px glidning mellan två foton av samma vägg, och en splat
+tränad mot foton som är så oense blir ett suddigt medelvärde. Justeringen
+stannar i träningen; det som MÄTS kommer fortfarande från ARKits egna poser.
+Se ``POSE_LEARNING_RATE`` — "några millimeter" måste hållas efter.
 
-**Poserna får glida, men bara för bildens skull.** De kommer från ARKit och
-duger till att mäta med. Till att *måla* med gör de det inte: reprojektionsfelet
-är 2–3 cm, vilket vid 1536 px är 15–20 pixlars glidning mellan två foton av samma
-vägg. Tränar man en splat mot foton som är oense på den nivån blir resultatet ett
-medelvärde av dem — suddigt, hur många gaussare och steg man än lägger på.
-``refine_poses`` låter därför varje kamera justera sig några millimeter. Den
-justeringen stannar i träningen och skrivs aldrig tillbaka till skanningen; det
-som mäts kommer fortfarande från ARKits egna poser. "Några millimeter" är en
-avsikt som måste hållas efter — se ``POSE_LEARNING_RATE``.
+**Fotona är inte överens om hur ljust rummet är.** ``adapt_appearance`` ger
+varje foto sex tal som förklarar bort dess egen ton, så gaussarna slipper göra
+det med sin färg. Se ``APPEARANCE_LEARNING_RATE``.
 
-**Fotona är inte överens om hur ljust rummet är.** ARKit ställer exponering och
-vitbalans automatiskt medan man går, och det ljusaste fotot i ett riktigt rum
-visade sig vara 2,3 gånger det mörkaste. Ett 3DGS har ingen väg att uttrycka
-"samma vägg, annan exponering" — den lägger sig mitt emellan, vilket är exakt
-den platta, urtvättade bilden användaren såg, och vitbalansen blir färgfläckar
-på vita ytor. ``adapt_appearance`` ger därför varje foto sex tal som förklarar
-bort dess egen ton, så att gaussarna slipper göra det med sin färg. Det som
-renderas ut bär rummets gemensamma ton, inte ett medelvärde av kamerans nycker.
+**Förlusten är inte bara L1.** Ett pixelavstånd är nöjt med ett medelvärde, så
+``SSIM_WEIGHT`` väger in strukturlikhet, som ser skillnad på skarpt och utsmetat.
 
-**Förlusten är inte bara L1.** Ett pixelavstånd är nöjt med ett medelvärde: två
-foton som är oense om var väggen ligger får sin lägsta L1 av något suddigt
-mittemellan. Därför väger ``SSIM_WEIGHT`` in strukturlikhet, som mäter lokal
-kontrast och samvariation och alltså ser skillnad på skarpt och utsmetat.
-
-**Djupet kommer inte från splatten.** Det låg nära till hands att låta gsplat
-rendera djup och skicka med det till skymningstestet, men splattens djup är ett
-genomsnitt över halvgenomskinliga gaussare och blir systematiskt grundare än
-ytan — desto mer ju längre träningen får hålla på. Ett skymningstest mot det
-måttet kastar bort korrekta texlar i stället för skymda. En vy som står i ett
-fotos pose ärver därför fotots LiDAR-djup; en inskjuten vy får inget alls.
+**Djupet kommer inte från splatten.** Splattens djup är ett genomsnitt över
+halvgenomskinliga gaussare och blir systematiskt grundare än ytan, desto mer ju
+längre träningen håller på — ett skymningstest mot det kastar bort korrekta
+texlar. En vy i ett fotos pose ärver fotots LiDAR-djup; en inskjuten vy får inget.
 """
 
 from __future__ import annotations
@@ -93,57 +66,33 @@ from .bundle import Keyframe, ScanBundle, connected_surface, measured_points
 
 log = logging.getLogger(__name__)
 
-#: Antal gaussare att starta med. Fler ger skarpare bild men långsammare steg.
+#: Antal gaussare att starta med.
 DEFAULT_MAX_SPLATS = 300_000
-#: 3 000 räckte inte. Uppmätt på ett riktigt rum: skillnaden mot fotot går från
-#: 24 till 8,7 grånivåer mellan 7 000 och 30 000 steg, och förtätningen slutar
-#: ändå av sig själv vid halva vägen.
+#: 7 000 → 30 000 steg tar felet mot fotot från 24 till 8,7 grånivåer.
 DEFAULT_ITERATIONS = 30_000
 #: Hur många extra vyer som vävs in mellan de riktiga fotona.
 DEFAULT_EXTRA_VIEWS = 2
-#: Så många gaussare telefonen får. Talet är också träningens tak — se ``train``.
+#: Telefonens tak, och även träningens antal — MCMC håller det konstant.
 #:
-#: Det som avgör skärpan är gaussare per KVADRATMETER, och det är uppmätt: samma
-#: modell, samma antal steg, samma budget, men sexton foton av ETT hörn ger 85 %
-#: av fotots skärpa medan hundraåtta foton av hela rummet ger 40 %. Renderingen
-#: ur det trånga fallet går knappt att skilja från fotografiet. Väggen är alltså
-#: inte modellen, inte poserna och inte förlusten — det är att lika många
-#: gaussare ska räcka till sju gånger så stor yta.
-#:
-#: Budgeten svarar därefter: 220k → 455k → 771k gaussare på hela rummet ger
-#: 40 → 49 → 58 % skärpa, en kurva som ännu inte har planat ut. Talet nedan är
-#: satt så att den mätta kurvan får fortsätta, inte efter vad som råkar rymmas i
-#: ett filformat. Det var PLY-formatets 68 byte per gaussare som satte det förra
-#: taket på 400 000; SPZ tar 20 byte, så samma nedladdning bär tre gånger fler
-#: — se ``write_spz``.
-#:
-#: Men budgeten är INTE längre den som binder, och det svepet ovan mätte i själva
-#: verket ``MAXIMUM_RADIUS`` genom budgeten: fler gaussare på samma yta tvingar
-#: fram mindre gaussare. Mätt var för sig, med ``tools/splat_check.py`` mot var
-#: tionde foto, är budgeten nästan verkningslös och radien allt:
+#: Skärpan avgörs av gaussare per KVADRATMETER: samma budget ger 85 % av fotots
+#: skärpa på ETT hörn men 40 % på hela rummet. Budgetsvepet 220k → 455k → 771k
+#: (40 → 49 → 58 %) mätte i själva verket ``MAXIMUM_RADIUS`` genom budgeten,
+#: eftersom fler gaussare på samma yta tvingar fram mindre. Mätt var för sig är
+#: radien allt och budgeten nästan verkningslös (``splat_check.py``):
 #:
 #: ==========  ==========  =======  ==========  ========
 #: radietak    tjocklek    budget   gaussare      skärpa
 #: ==========  ==========  =======  ==========  ========
 #: 5 cm        fri            2 M     530 264    52,5 %
-#: 2 cm        fri            2 M     779 189    55,0 %
 #: 8 mm        fri            2 M   1 729 853    70,3 %
 #: 8 mm        fri            3 M   2 428 287    71,9 %
-#: 6 mm        fri            3 M   2 738 817    82,4 %
-#: 4 mm        fri            3 M   2 919 128   107,3 %
-#: 2 cm        2 mm           3 M     989 117    58,7 %
-#: 1 cm        1 mm           3 M   2 145 976    68,4 %
-#: 8 mm        1 mm           3 M   2 517 633    74,2 %
 #: 6 mm        1 mm           3 M   2 786 113    86,1 %
 #: 4 mm        0,8 mm         3 M   2 935 585   115,1 %
 #: ==========  ==========  =======  ==========  ========
 #:
-#: Halva miljonen extra gaussare vid oförändrad radie gav 1,6 procentenheter;
-#: en radie fyra gånger mindre gav arton. Budgeten är därför satt till vad
-#: radien behöver för att inte svälta, inget mer — vid 6 mm blir 2,79 M av
-#: 3 M kvar, så den räcker precis.
-#:
-#: Talen ÖVER hundra procent är inte bättre än de under, se ``MAXIMUM_RADIUS``.
+#: En halv miljon extra gaussare gav 1,6 procentenheter, en fyra gånger mindre
+#: radie gav arton. Budgeten är satt så att radien inte svälter: vid 6 mm blir
+#: 2,79 M kvar. Tal ÖVER 100 % är sämre, inte bättre — se ``MAXIMUM_RADIUS``.
 PHONE_SPLAT_BUDGET = 3_000_000
 
 #: Nollte sfäriska harmoniken. Splat-visare lagrar färgen som SH-koefficient och
@@ -180,44 +129,27 @@ LEARNING_RATES = {
 }
 
 #: Takten för gaussarnas läge, skalad med rummets storlek som i 3DGS-artikeln.
-#: Här satt fem gånger lägre förr, för att inte "kasta bort den mätta
-#: geometrin". Det var fel resonemang: splatten mäter ingenting. En gaussare som
-#: inte får flytta sig till rätt plats växer i stället tills den täcker felet,
-#: och stora gaussare är precis vad ett utsmetat rum består av.
+#: Får inte sänkas "för att skydda geometrin" — splatten mäter ingenting, och en
+#: gaussare som inte får flytta sig växer i stället tills den täcker felet.
 MEANS_LEARNING_RATE = 1.6e-4
 
-#: Genomskinliga från början. Startar de nästan täckande blir de 200 000
-#: överlappande gaussarna en vägg av dimma: den främsta äter hela alfat och
-#: ytorna bakom får aldrig någon gradient att lära sig av.
+#: Genomskinliga från början, annars äter den främsta hela alfat och ytorna
+#: bakom får aldrig någon gradient.
 INITIAL_OPACITY = 0.1
 
-#: Kamerornas egen inlärningstakt. Låg med flit: felet vi rättar är centimeter,
-#: inte meter, och en lös kamera hittar hellre en vacker lögn än rummet.
-#:
-#: Stod på 1e-4 utan koppel, och då gick det precis så illa: uppmätt på det
-#: riktiga rummet flyttade kamerorna sig 44 mm i median och 179 mm som mest —
-#: alltså mer än det reprojektionsfel på 2–3 cm de skulle rätta. Adam tar ungefär
-#: ett steg av storleken ``lr`` oavsett hur liten gradienten är, så över 30 000
-#: steg fanns ingen övre gräns alls. gsplats eget referensskript kör 1e-5 med
-#: ``weight_decay`` 1e-6, och det är rätt: takten sätter hur långt kameran KAN
-#: gå, avklingningen drar den tillbaka mot ARKits pose när bilden inte tjänar på
-#: att den flyttar sig.
+#: Kamerornas egen inlärningstakt. Adam tar ungefär ett steg av storleken ``lr``
+#: oavsett gradient, så takten sätter hur långt kameran KAN gå och avklingningen
+#: drar den tillbaka mot ARKits pose. Vid 1e-4 gick kamerorna 44 mm i median och
+#: 179 mm som mest — mer än de 2–3 cm de skulle rätta.
 POSE_LEARNING_RATE = 1e-5
 POSE_DECAY = 1e-6
 
-#: Fotona är tagna med ARKits automatik, och den justerar sig medan man går.
-#: Uppmätt på användarens rum: ljusaste fotot är 2,30 gånger det mörkaste,
-#: blåkanalen mot den gröna svänger 0,71–1,01, och mellan två foton i följd
-#: hoppar ljuset 53 grånivåer som mest. En modell som tränas mot foton som är så
-#: oense om rummets ton kan inte göra annat än att lägga sig mitt emellan: det
-#: ensamt ger L1 0,068 av de 0,121 vi mätte på undanhållna foton, alltså mer än
-#: hälften av hela felet. Det syns som en platt, urtvättad bild, och vitbalansen
-#: syns som färgfläckar på vita ytor där olika foton råkat dominera.
-#:
-#: Därför får varje foto en egen förstärkning och nollpunkt per kanal, som lärs
-#: samtidigt med bilden. Sex tal per foto — de kan inte hitta på detaljer, bara
-#: förklara bort exponeringen, så gaussarna slipper göra det med sin färg.
-#: Rättelsen stannar i träningen: det som renderas ut har rummets gemensamma ton.
+#: ARKits automatik justerar sig medan man går: ljusaste fotot är 2,30 gånger
+#: det mörkaste, blått mot grönt svänger 0,71–1,01, och två foton i följd hoppar
+#: 53 grånivåer. Det ensamt är L1 0,068 av 0,121 på undanhållna foton. Varje
+#: foto får därför sex egna tal (förstärkning och nollpunkt per kanal) som lärs
+#: med bilden; de kan bara förklara bort exponeringen, inte hitta på detaljer.
+#: Rättelsen stannar i träningen — det som renderas ut har rummets gemensamma ton.
 APPEARANCE_LEARNING_RATE = 1e-3
 APPEARANCE_DECAY = 1e-6
 
@@ -232,50 +164,23 @@ SSIM_WEIGHT = 0.2
 SCALE_PENALTY = 0.01
 
 #: Hur hårt en gaussare tvingas välja mellan att täcka och att inte finnas.
+#: Störst vid alfa 0,5 och noll i båda ändarna, så det säger inte vilket håll en
+#: gaussare ska ta, bara att den inte får bli hängande halvvägs. Ett straff rakt
+#: NEDÅT på opaciteten mättes verkningslöst (86,1 mot 86,3 %).
 #:
-#: Här satt förr ett straff på opaciteten rakt av, alltså en kraft NEDÅT. Det är
-#: fel väg, och uppmätt gjorde det ingenting alls (86,1 mot 86,3 procents skärpa
-#: utan straffen) — ytspärren gör redan deras jobb.
-#:
-#: Det verkliga felet syns när man frågar renderaren i stället för modellen: vid
-#: sex millimeters radietak täcks varje pixel av 55 gaussare, medan medelalfat
-#: 0,30 betyder att 6,4 lager räcker för att släcka nittio procent av ljuset
-#: bakom. Ytan är alltså åtta gånger mer redundant än den behöver vara, och varje
-#: överflödigt lager är ännu en fritt optimerad färg. Femtiofem färger per pixel
-#: har oändligt många blandningar som ser lika ut från träningsvyerna och skiljer
-#: sig från nya — det är skimret, och det är samma underbestämning som de 339
-#: lagren vid fem centimeter, bara mildare.
-#:
-#: Straffet är störst vid alfa 0,5 och noll i båda ändarna, så det säger inte
-#: vilket håll en gaussare ska ta, bara att den inte får bli hängande halvvägs.
-#: De som faller mot noll plockas av ``MINIMUM_OPACITY`` och flyttas av MCMC dit
-#: bilden är fel; de som når upp mot ett skymmer resten, och då är det färre
-#: färger som avgör pixeln.
+#: Felet syns bara om man frågar renderaren: vid 6 mm täcks varje pixel av 55
+#: gaussare medan medelalfat 0,30 gör att 6,4 lager räcker för att skymma. 55
+#: fritt optimerade färger per pixel har oändligt många blandningar som ser lika
+#: ut från träningsvyerna och skiljer sig från nya. Det är skimret.
 OPACITY_POLARITY = 0.01
 
-#: Svagare än så syns en gaussare inte ens som en aning. Nästan halva en
-#: MCMC-tränad splat hamnar där, eftersom straffet ovan trycker ned alla som
-#: inte behövs. Uppmätt på det riktiga rummet: att kasta dem nästan halverar
-#: filen och kostar 0,14 dB — och den renderade bilden blir marginellt SKARPARE.
+#: Svagare än så syns en gaussare inte. Att kasta dem halverar nästan filen,
+#: kostar 0,14 dB och gör bilden marginellt SKARPARE.
 MINIMUM_OPACITY = 0.05
 
-#: Golv för opaciteten under träningen. Noll stänger av det.
-#:
-#: ``OPACITY_POLARITY`` ovan säger åt gaussarna att välja sida men tvingar dem
-#: inte, och uppmätt gjorde straffen ingenting alls. Varje gång ett mjukt straff
-#: mätts verkningslöst i det här rummet har ett hårt tak i stället bitit direkt
-#: — radien, tjockleken, ytspärren. Det här är samma grepp på opaciteten:
-#: klämningen sker varje steg, efter optimerarens, precis som de andra.
-#:
-#: Det som ska minska är inte antalet gaussare utan antalet FÄRGER som avgör en
-#: pixel. Med alfa 0,30 krävs 6,4 lager för att skymma bakgrunden och 55 ligger
-#: där; med golvet höjt räcker en handfull, och resten hamnar bakom en yta som
-#: faktiskt är ogenomskinlig. Risken åt andra hållet är att en nästan täckande
-#: främre gaussare stryper gradienten till allt bakom, vilket är exakt varför
-#: ``INITIAL_OPACITY`` är låg — därför ett golv, inte ett startvärde: gaussarna
-#: får bli genomskinliga i början och tvingas upp först under träningen.
-#:
-#: Uppmätt på användarens rum, mot undanhållna foton:
+#: Golv för opaciteten under träningen, klämt varje steg. Noll stänger av det.
+#: Ett golv och inte ett startvärde, eftersom en tidig täckande gaussare stryper
+#: gradienten till allt bakom — jämför ``INITIAL_OPACITY``.
 #:
 #: ===== ========= ====== ====== ==================
 #: golv  gaussare  L1     skärpa spridning på vägg
@@ -285,132 +190,129 @@ MINIMUM_OPACITY = 0.05
 #: 0,90  3 000 000 0,1174 103,7% 4,32×
 #: ===== ========= ====== ====== ==================
 #:
-#: Sista kolumnen är ``tools/korn2.py``: hur mycket renderingen skiftar lokalt
-#: där FOTOT är jämnt, delat med fotots eget skift. Ett vore en vägg lika lugn
-#: som verklighetens; fem är den ulliga ytan telefonen visar. Måttet finns för
-#: att skärpetalet inte kan skilja sudd från korn — de drar åt var sitt håll och
-#: räknas som ett tal.
-#:
-#: Noll femtio och noll nittio är lika bra på kornet, så det lägre väljs: det
-#: lämnar mer kvar åt optimeraren, och skärpan landar strax under hundra i
-#: stället för att skjuta förbi. Filen växer 42 → 46 MB, eftersom ingen gaussare
-#: längre faller under ``MINIMUM_OPACITY`` och gallras.
-#:
-#: Kvar står att väggen ändå skiftar fyra gånger mer än verklighetens. Golvet
-#: löser alltså en del av underbestämningen, inte hela.
+#: Sista kolumnen är ``tools/korn2.py``. 0,50 och 0,90 är lika bra på kornet, så
+#: det lägre väljs. Väggen skiftar ändå fyra gånger mer än verklighetens.
 MINIMUM_ALPHA = 0.5
 
 #: Hur långt en gaussares kulör får avvika från sitt grannskaps. Noll stänger av.
+#: Där FOTOT är jämnt ligger dess kulörspridning på 0,74 grånivåer men
+#: renderingens på 4,42 — den pastellrosa fläckigheten finns alltså redan i
+#: serverns rendering och är inte telefonens färgrum. Inget i förlusten säger att
+#: två grannar på samma vägg ska ha samma nyans; taket säger det i stället.
 #:
-#: Uppmätt på användarens rum: på de rutor där FOTOT är jämnt ligger fotots egen
-#: kulörspridning på 0,74 grånivåer — väggen är i praktiken neutralgrå — medan
-#: renderingens är 4,42, alltså sex gånger så färgstark. Det är den pastellrosa
-#: och gröna fläckighet som setts hela vägen, och den är alltså INTE telefonens
-#: färgrum: den finns i serverns egen rendering, och den överlever att
-#: exponeringsrättelsen sugit upp fotonas vitbalans (0,91–1,25 i blått mot grönt).
-#:
-#: Kvar står bara gaussarnas egen färg: tre fria tal per gaussare, anpassade mot
-#: några få bildpunkter som femtio andra gaussare delar på. Ingenting i
-#: förlusten säger att två grannar på samma vägg ska ha samma nyans, så bruset i
-#: dem blir kulört. Taket säger det i stället, mot ljusheten säger det ingenting.
-#:
-#: Uppmätt: kulörspridningen på grå vägg går från 6,3 till 1,9 gånger fotots, och
-#: L1 rör sig inte (0,1163 mot 0,1167). Det syns tydligast där det finns färg att
-#: ha fel om: ett brunt parkettgolv renderades GRÖNT utan taket, och blir brunt
-#: med. Ljushetsbruset stiger något (4,4 till 5,0 gånger fotots) — samma
-#: underbestämning uttrycks i ljushet i stället — men kulört brus på en grå vägg
-#: är det som läses som pärlemorskimmer, och ljushetsbrus läses som yta.
+#: Uppmätt: kulörspridningen går 6,3 → 1,9 gånger fotots, L1 rör sig inte
+#: (0,1163 mot 0,1167), och ett brunt parkettgolv som renderades GRÖNT blir
+#: brunt. Ljushetsbruset stiger 4,4 → 5,0 — samma underbestämning uttryckt i
+#: ljushet — men det läses som yta, medan kulört brus läses som skimmer.
 MAXIMUM_CHROMA = 0.005
 
 #: Hur stor ruta som räknas som en gaussares grannskap när kulören kläms.
-#:
-#: Satt först till 2 cm, ungefär tre gaussarbredder, och det tog bara sex procent
-#: av felet fast klämningen bevisligen bet: spridningen INOM rutan föll från 24,4
-#: till 2,6 grånivåer. Felet satt alltså på en annan skala. Delar man upp
-#: spridningen i den inom rutorna och den mellan deras medelvärden syns det: på
-#: 2 cm står 28 grånivåer MELLAN rutorna, och även på en halv meter återstår 15.
-#: Färgbruset är storskalig nyansdrift över väggen, inte gnistrande punktbrus.
-#:
-#: En kvarts meter är därför inte ett grannskap i geometrisk mening utan den
-#: skala felet lever på. Att riktiga färgkanter skulle plattas ut av det är mätt
-#: och obesannat — golvet ovan behöll sin gräns mot väggen.
+#: Vid 2 cm togs bara sex procent av felet trots att klämningen bet (spridningen
+#: inom rutan föll 24,4 → 2,6). Felet är storskalig nyansdrift, inte punktbrus:
+#: 28 grånivåer står MELLAN rutorna vid 2 cm och 15 återstår vid en halv meter.
+#: En kvarts meter är alltså den skala felet lever på, inte ett geometriskt
+#: grannskap. Riktiga färgkanter plattas inte ut — golvets gräns mot väggen står.
 CHROMA_NEIGHBOURHOOD = 0.25
 
 #: Hur långt utanför skanningens egen låda en gaussare får ligga. MCMC:s brus
-#: slungar iväg ett par tusen stycken. De är osynliga men inte gratis: telefonen
-#: ställer kameran efter splattens utsträckning, och med dem kvar mätte rummet
-#: 1 343 meter i stället för 9.
+#: slungar iväg ett par tusen. De är osynliga men inte gratis: telefonen ställer
+#: kameran efter splattens utsträckning, och rummet mätte 1 343 m i stället för 9.
 ROOM_MARGIN = 1.0
 
-#: Största radie en gaussare får ha. Ytan den ska beskriva är mätt med 12 mm
-#: mellan hörnen; en gaussare på en halv meter beskriver ingen yta alls utan
-#: lägger en färgtvätt över halva rummet. Det sänker pixelfelet billigt och är
-#: precis vad ett dimmigt rum består av. Uppmätt på det riktiga rummet innan
-#: taket fanns: största radien var 1,46 m, och de tio största satt mitt i luften.
+#: Största radie en gaussare får ha. **Talet som avgör skärpan.**
 #:
-#: **Det här är talet som avgör skärpan**, och det stod tio gånger för högt.
-#: Slutsatsen att taket "inte längre binder" drogs ur medianaxeln (20,8 mm), och
-#: medianen renderar inte bilden. Frågar man renderaren i stället — ``info`` från
-#: ``rasterization`` — blir svaret ett annat: vid 5 cm projicerar medianen till
-#: arton pixlars radie på en bild som är 1536 bred, och varje pixel täcks av 339
-#: gaussare. Det är inte en yta utan trehundra halvgenomskinliga lager, och
-#: blandningen av dem ÄR det pärlemorskimrande diset. De som täcker mest ligger
-#: dessutom klistrade mot taket: största halvaxel 4,8 cm av 5,0 tillåtna.
+#: Medianaxeln ljuger om huruvida taket binder — fråga renderaren i stället
+#: (``info`` från ``rasterization``). Vid 5 cm projicerar medianen till 18 px
+#: radie på en 1536 px bred bild och varje pixel täcks av 339 gaussare: inte en
+#: yta utan trehundra halvgenomskinliga lager, och blandningen av dem ÄR diset.
+#: Utan tak blev största radien 1,46 m med de tio största mitt i luften.
 #:
-#: Rummet kan alltså inte bli skarpare än den grövsta gaussaren, oavsett hur
-#: många de är — se tabellen vid ``PHONE_SPLAT_BUDGET``, där en fyra gånger
-#: mindre radie gav arton procentenheter och en halv miljon extra gaussare gav
-#: en och en halv.
+#: Stod på 6 mm och var då det som gjorde rummet grynigt. Uppmätt svep med
+#: ``kant_check.py`` och ``korn2.py``, som skiljer sudd från korn:
 #:
-#: Sex millimeter, och inte mindre, är en avvägning mellan två fel som drar åt
-#: var sitt håll: stora gaussare ger diset ovan, små ger korn, för då räcker de
-#: inte till en sammanhängande yta. **Skärpetalet fångar båda felen som ETT tal
-#: och kan därför inte välja mellan dem** — det passerar hundra procent när
-#: kornet tar över, alltså är 115 % en sämre modell än 86 %. Bara bilden skiljer
-#: dem åt; zooma in på en bit slät vägg.
-MAXIMUM_RADIUS = 0.006
+#: ======== ========== ========== ====== ======
+#: radietak kantskärpa i pixlar   korn   kulör
+#: ======== ========== ========== ====== ======
+#: 6 mm     0,62×      0,78 px    5,13×  1,8×
+#: 20 mm    0,55×      0,93 px    5,45×
+#: 60 mm    0,55×      0,93 px    4,06×
+#: 1 m      0,55×      0,93 px    2,59×  1,0×
+#: ======== ========== ========== ====== ======
+#:
+#: **Kolumnen "i pixlar" är hela poängen.** Kvoten är enhetslös och omöjlig att
+#: väga mot kornet förrän den kalibrerats mot känt sudd — kör
+#: ``kant_check.py <rum> --calibrate``. Att släppa taket kostar 0,15 pixlar
+#: oskärpa, vilket ingen kan se, och halverar kornet samtidigt som kulören
+#: landar exakt på fotots. Geometrin blir marginellt sämre (överskott mot ytan
+#: 2,6 → 3,5 mm, ``skal_check.py``), fortfarande långt under en centimeter.
+#:
+#: Anledningen syns i axlarna: med taket på 6 mm låg MEDIANEN på 5,75 mm, alltså
+#: klistrad mot gränsen — en mosaik av likstora brickor, och mosaiken var
+#: kornet. Utan tak blir medianen 2,74 mm medan 99:e percentilen är 55 mm: de
+#: flesta blir MINDRE, ett fåtal växer till stora plattor på de släta väggarna.
+#:
+#: Taket infördes när ``MAXIMUM_THICKNESS`` inte fanns och en stor gaussare
+#: verkligen var en dimboll. Med tjockleken klämd är en stor gaussare i stället
+#: en tunn platta som ligger an mot väggen. Rör inte det ena utan att mäta det
+#: andra.
+MAXIMUM_RADIUS = 1.0
 
 #: Hur tjock en gaussare får vara tvärs sin tunnaste led.
-#:
 #: ``MAXIMUM_RADIUS`` klämmer bara den STÖRSTA axeln, så allt samlas mot taket
-#: och rundas av: uppmätt vid 4 mm var mellersta axeln 1,1 gånger den minsta och
-#: största 1,00 gånger den mellersta. Alltså klot, inte skivor. En vägg byggd av
-#: fyra millimeters klot är bucklig av sig själv, och det är den ulliga
-#: stucco-ytan telefonen visade. Att pressa radien ännu längre ned gör det värre
-#: — klotet blir bara mindre.
-#:
-#: ``SEED_THICKNESS`` sår dem redan som skivor, men det håller inte: taket är
-#: det enda som binder under träningen, och ett tak på största axeln säger
-#: ingenting om den minsta. Den här gränsen säger det i stället. Uppmätt blev
-#: mellersta axeln 7,4 gånger den minsta i stället för 1,1 — riktiga skivor —
-#: och skärpan steg från 82 till 86 % vid samma radie. En skiva som är bred
-#: längs väggen suddar bara där färgen ändå är lik.
+#: och rundas av till klot (mellersta axeln 1,1 gånger den minsta). En vägg av
+#: fyra millimeters klot är bucklig av sig själv — den ulliga stucco-ytan. Med
+#: den här gränsen blir mellersta axeln 7,4 gånger den minsta, alltså riktiga
+#: skivor, och skärpan steg 82 → 86 % vid samma radie. ``SEED_THICKNESS`` ensam
+#: räcker inte: bara tak binder under träningen.
 MAXIMUM_THICKNESS = 0.001
 
-#: Hur långt från LiDAR-ytan en gaussare får driva. Ytan är mätt — en gaussare
-#: som svävar en decimeter ut i rummet representerar ingenting som finns där.
-#: Uppmätt utan gränsen: 74 % av gaussarna låg mer än 2 cm från ytan och bar
-#: 91 % av den synliga massan, alltså var rummet mest dimma.
+#: Hur långt från LiDAR-ytan en gaussare får driva. Utan gränsen låg 74 % av
+#: gaussarna mer än 2 cm från ytan och bar 91 % av den synliga massan.
 MAXIMUM_DRIFT = 0.02
 
-#: Hur ofta varje gaussare får leta upp sin ytpunkt på nytt. Själva klämningen
-#: sker VARJE steg — se ``_pulled_to_surface``; det är bara frågan till KD-trädet
-#: som är dyr, och den behövs bara när gaussarna bytt plats.
-#:
-#: Låg på 250 med motiveringen att en gaussare rör sig bråkdelar av en millimeter
-#: per steg. Den motiveringen gällde gradienten, inte MCMC: strategin skakar
-#: lägena med ett brus som skalas mot kovariansen, och en slumpvandring över 250
-#: steg når √250 gånger så långt som ett steg. Uppmätt blev det 78 % av budgeten
-#: som fick ryckas tillbaka vid steg 5 500 — alltså slängdes fyra gaussare av
-#: fem flera centimeter, om och om igen, och de flesta slocknade av det.
+#: Hur ofta varje gaussare får leta upp sin ytpunkt på nytt. Klämningen sker
+#: VARJE steg — se ``_pulled_to_surface``; bara KD-trädsfrågan är dyr. Låg på
+#: 250, men det motiverades av gradientsteg och MCMC skakar lägena med brus: en
+#: slumpvandring når √250 gånger så långt. Då rycktes 78 % av budgeten tillbaka
+#: flera centimeter vid steg 5 500, och de flesta slocknade av det.
 SURFACE_INTERVAL = 100
 
+#: Om förtätningen ska styras av GRADIENTEN i stället för av opaciteten.
+#:
+#: MCMC håller antalet gaussare fast och flyttar de slocknade dit felet är
+#: störst. Den har därför ingen gradientstyrd förtätning alls: fördelningen
+#: följer opacitet mot ett tak, inte var bilden är fel. ``DefaultStrategy`` —
+#: som Inrias original, gsplats eget förval och nerfstudios ``splatfacto``
+#: använder — klonar och delar där skärmgradienten är stor, alltså vid kanterna.
+#:
+#: MÄTT UTAN VINST: kantskärpa 0,63× mot MCMC:s 0,62× och korn 5,76× mot 5,13×,
+#: alltså likvärdig på kanterna och sämre på ytorna. Hypotesen var att MCMC:s
+#: enda storlekstak för allt hindrade små gaussare vid kanten och stora på
+#: väggen samtidigt; den adaptiviteten kom i stället ur att släppa
+#: ``MAXIMUM_RADIUS``. Koden står kvar avstängd för att svaret ska gå att
+#: kontrollera utan att byggas om.
+#:
+#: Antalet gaussare blir inte längre exakt ``PHONE_SPLAT_BUDGET`` (vi fick
+#: 1,85 M), så exporten kan behöva gallra — kontrollera talet i loggen.
+GRADIENT_DENSIFICATION = False
+
+#: Skärmgradient över vilken en gaussare klonas eller delas. gsplats förval är
+#: 0,0002 för ``absgrad=False``; med ``absgrad=True``, som är det som mäter var
+#: bilden faktiskt är fel, är 0,0008 gsplats eget rekommenderade tal.
+GROW_GRADIENT = 0.0008
+
+#: Andel av träningen som får förtäta. Sista fjärdedelen ska bara finslipa —
+#: nya gaussare där hinner ändå inte lära sig sin färg.
+REFINE_STOP = 0.75
+
+#: Hur ofta opaciteten nollställs mot ett lågt värde. Det är greppet som gör att
+#: dimma inte kan överleva: alla tvingas ned och bara de som verkligen behövs
+#: tar sig upp igen. MCMC har ingen motsvarighet.
+OPACITY_RESET = 3000
+
 #: Hur tunn en startgaussare är tvärs ytan, som andel av avståndet till grannen.
-#: En vägg beskrivs av skivor, inte av klot: ett klot med radien r suddar över r
-#: åt alla håll, medan en skiva bara suddar längs väggen där färgen ändå är lik.
-#: Uppmätt innan startriktningen fanns: hälften av de tränade gaussarna var
-#: närmast klotformade (mellersta axeln 1,45 gånger den minsta i median), alltså
-#: hittade optimeraren aldrig dit själv.
+#: Utan startriktning var hälften av de tränade gaussarna närmast klotformade
+#: (mellersta axeln 1,45 gånger den minsta), alltså hittade optimeraren aldrig dit.
 SEED_THICKNESS = 0.1
 
 
@@ -420,21 +322,15 @@ def train(bundle: ScanBundle,
           densify: bool = True,
           refine_poses: bool = True,
           adapt_appearance: bool = True,
-          budget: int = PHONE_SPLAT_BUDGET) -> SplatModel:
+          budget: int = PHONE_SPLAT_BUDGET,
+          pose_learning_rate: float = POSE_LEARNING_RATE,
+          gradient_densification: bool = GRADIENT_DENSIFICATION) -> SplatModel:
     """Passar gaussare mot fotona. Kräver CUDA.
 
-    ``budget`` är telefonens tak, och det gäller redan här. Förr sköt träningen
-    fritt upp till några miljoner gaussare och exporten gallrade ner till taket
-    efteråt — men gallringen mätte opacitet gånger volym, alltså valde den de
-    STÖRSTA. En platt skiva som täcker en vägg skarpt har liten volym; en rund
-    klump som smetar har stor. Exporten kastade alltså systematiskt bort det
-    träningen lärt sig och behöll dimman. Uppmätt på det riktiga rummet: av den
-    exporterade miljonen var hälften närmast klot (mid/min 1,45 i median),
-    vilket är fel form för en yta.
-
-    Därför äger träningen taket i stället, genom gsplats MCMC-strategi: antalet
-    gaussare hålls konstant och de som slocknar flyttas dit bilden är fel. Det
-    som skickas till telefonen är då exakt det som optimerades.
+    ``budget`` är telefonens tak och gäller redan här, genom MCMC-strategin.
+    Att låta exporten gallra efteråt gick inte: den mätte opacitet gånger volym
+    och valde alltså de STÖRSTA — en skarp skiva har liten volym, en smetig
+    klump stor — så hälften av den exporterade miljonen var närmast klot.
     """
     import torch
     from scipy.spatial import cKDTree
@@ -478,18 +374,15 @@ def train(bundle: ScanBundle,
     schedule = torch.optim.lr_scheduler.ExponentialLR(
         optimizers["means"], gamma=0.01 ** (1.0 / max(iterations, 1)))
 
-    strategy, state = _densification(budget) if densify else (None, None)
+    strategy, state = (_densification(budget, iterations, gradient_densification)
+                       if densify else (None, None))
+    gradient_driven = strategy is not None and hasattr(strategy, "grow_grad2d")
 
-    # Hela ytan, inte de utglesade startpunkterna: det som ska hindras är drift
-    # ut i rummet, och då gäller varje mätt punkt.
-    #
-    # Och inte bara meshens punkter, utan varje LiDAR-djuppixel. Meshen är
-    # ARKits rekonstruktion och tappar gardiner, växter och soffkanter: nio
-    # procent av de rutor LiDAR såg saknade yta i den, och renderingsfelet var
-    # 2,4 gånger högre just där. Det var den vita frosten i förgrunden — utan
-    # laglig plats smetas det fotot ser ut på väggen bakom. Med djupkartorna
-    # med faller andelen till 2,8 procent. Sådden är kvar på meshen, som är det
-    # enda som har normaler.
+    # Hela ytan, inte de utglesade startpunkterna, och inte bara meshens punkter
+    # utan varje LiDAR-djuppixel: meshen tappar gardiner, växter och soffkanter,
+    # så 9 % av rutorna LiDAR såg saknade yta i den och renderingsfelet var 2,4
+    # gånger högre just där. Det var den vita frosten. Med djupkartorna faller
+    # andelen till 2,8 %. Sådden är kvar på meshen, som är det enda med normaler.
     anchor_cloud = np.concatenate(
         [surface, measured_points(bundle.keyframes)]).astype(np.float32)
     log.info("ankarmoln: %d punkter, varav %d ur djupkartorna",
@@ -508,7 +401,7 @@ def train(bundle: ScanBundle,
     pose_optimizer = None
     if refine_poses:
         deltas = torch.nn.Parameter(torch.zeros(len(views), 6, device=device))
-        pose_optimizer = torch.optim.Adam([deltas], lr=POSE_LEARNING_RATE,
+        pose_optimizer = torch.optim.Adam([deltas], lr=pose_learning_rate,
                                           weight_decay=POSE_DECAY)
 
     # Log-förstärkning och nollpunkt per kanal och foto. Noll i båda är ett
@@ -524,25 +417,25 @@ def train(bundle: ScanBundle,
         index = int(generator.integers(len(views)))
         view = views[index]
         viewmat = view["viewmat"] if deltas is None else _nudged(view["viewmat"], deltas[index])
-        rendered, info = _rasterize(parameters, view, device, viewmat)
+        rendered, info = _rasterize(parameters, view, device, viewmat,
+                                    absgrad=gradient_driven)
         if appearance is not None:
-            # Minus medelvärdet över alla foton: bara SKILLNADER i ton får
-            # uttryckas här, aldrig en gemensam förskjutning. Annars är
-            # parametriseringen tvetydig — modellen kan bli en aning mörkare
-            # medan alla 120 rättelserna blir en aning ljusare, till samma
-            # förlust. Uppmätt utan ankaret drev tonen så mycket att felet mot
-            # ett foto rakt av växte från 0,121 till 0,137 fast rummet blev
-            # bättre. Det som renderas ut ska bära fotonas gemensamma ton.
+            # Minus medelvärdet: bara SKILLNADER i ton får uttryckas, aldrig en
+            # gemensam förskjutning. Annars är parametriseringen tvetydig —
+            # modellen kan bli mörkare medan alla rättelser blir ljusare, till
+            # samma förlust. Utan ankaret växte felet mot ett foto rakt av från
+            # 0,121 till 0,137 fast rummet blev bättre.
             rendered = _exposed(rendered, appearance[index] - appearance.mean(dim=0))
 
         target = view["image"].float() / 255.0
         loss = ((1 - SSIM_WEIGHT) * (rendered - target).abs().mean()
                 + SSIM_WEIGHT * (1 - _ssim(rendered, target)))
-        if strategy is not None:
+        if strategy is not None and not gradient_driven:
             # Med ett fast antal gaussare är det billigt att lägga sig som dimma
             # över hela rummet: många halvgenomskinliga klumpar sänker
             # pixelfelet utan att någon yta blir skarp. Straffen gör dimman dyr,
             # så budgeten går till täta gaussare som sitter på en yta.
+            # Standardstrategin gallrar bort dimman i stället och behöver dem inte.
             alpha = torch.sigmoid(parameters["opacities"])
             loss = (loss
                     # Fyran gör att termen är ett vid alfa 0,5 och noll i ändarna.
@@ -555,6 +448,11 @@ def train(bundle: ScanBundle,
             pose_optimizer.zero_grad(set_to_none=True)
         if appearance_optimizer is not None:
             appearance_optimizer.zero_grad(set_to_none=True)
+        if gradient_driven:
+            # Sparar gradienten på skärmlägena. Utan det här anropet finns inget
+            # att förtäta efter — ``means2d.grad`` är en mellanled och kastas.
+            strategy.step_pre_backward(params=parameters, optimizers=optimizers,
+                                       state=state, step=step, info=info)
         loss.backward()
 
         for optimizer in optimizers.values():
@@ -564,8 +462,11 @@ def train(bundle: ScanBundle,
         if appearance_optimizer is not None:
             appearance_optimizer.step()
 
-        if strategy is not None:
-            # Bruset som flyttar de slocknade gaussarna skalas med lägenas
+        if gradient_driven:
+            strategy.step_post_backward(params=parameters, optimizers=optimizers,
+                                        state=state, step=step, info=info)
+        elif strategy is not None:
+            # MCMC:s brus som flyttar de slocknade gaussarna skalas med lägenas
             # inlärningstakt, och den trappas ned. Sent i träningen ska en
             # gaussare som hittat sin plats stå still.
             strategy.step_post_backward(params=parameters, optimizers=optimizers,
@@ -584,7 +485,11 @@ def train(bundle: ScanBundle,
             parameters["scales"].scatter_(
                 1, thinnest, parameters["scales"].gather(1, thinnest)
                 .clamp(max=float(np.log(MAXIMUM_THICKNESS))))
-            if MINIMUM_ALPHA > 0:
+            # Golvet är MCMC:s. Standardstrategin nollställer opaciteten med
+            # jämna mellanrum för att låta dimman dö, och ett golv som klämmer
+            # varje steg gör den nollställningen verkningslös — då gallras aldrig
+            # någon gaussare bort och hela mekanismen är satt ur spel.
+            if MINIMUM_ALPHA > 0 and not gradient_driven:
                 parameters["opacities"].clamp_(
                     min=float(np.log(MINIMUM_ALPHA / (1 - MINIMUM_ALPHA))))
 
@@ -612,7 +517,8 @@ def train(bundle: ScanBundle,
             # sist. Ett litet tal betyder att gränsen håller löpande; ett stort
             # att gaussarna hinner fara iväg mellan klämningarna.
             log.info("steg %d/%d, förlust %.4f, %d gaussare, %d klämda",
-                     step, iterations, float(loss.detach()), len(parameters["means"]), pulled)
+                     step, iterations, float(loss.detach()),
+                     len(parameters["means"]), pulled)
 
     if appearance is not None:
         centred = appearance.detach() - appearance.detach().mean(dim=0)
@@ -1035,18 +941,31 @@ def _view(frame: Keyframe, device: str, camera_from_world: np.ndarray | None = N
     }
 
 
-def _densification(budget: int):
-    """gsplats MCMC-strategi, med telefonens tak som antal.
+def _densification(budget: int, iterations: int,
+                   gradient_driven: bool = GRADIENT_DENSIFICATION):
+    """Hur gaussarna förtätas. Returnerar strategin och dess tillstånd.
 
-    Standardstrategin delar och klonar tills bilden stämmer och kan inte hållas
-    på ett antal — den lämnar över den frågan till exporten, som bara ser
-    geometri och inte vad varje gaussare bidrog med. MCMC håller i stället
-    antalet fast och flyttar de gaussare som slocknat dit felet är störst, så
-    hela budgeten hela tiden ligger där bilden behöver den.
+    MCMC håller antalet fast vid ``budget`` och flyttar de gaussare som slocknat
+    dit felet är störst, så hela budgeten hela tiden ligger där bilden behöver
+    den. Standardstrategin kan inte hållas på ett antal, men den är den ENDA av
+    de två som förtätar efter var bildfelet sitter — se ``GRADIENT_DENSIFICATION``.
+
+    De två har olika krav på anropskoden: ``DefaultStrategy`` behöver ett
+    ``step_pre_backward`` för att spara gradienten på ``means2d``, och dess
+    ``step_post_backward`` tar ingen inlärningstakt. Träningen frågar därför
+    ``isinstance`` i stället för att gissa.
     """
-    from gsplat.strategy import MCMCStrategy
+    from gsplat.strategy import DefaultStrategy, MCMCStrategy
 
-    strategy = MCMCStrategy(cap_max=budget, verbose=False)
+    if gradient_driven:
+        strategy = DefaultStrategy(
+            grow_grad2d=GROW_GRADIENT,
+            refine_stop_iter=int(iterations * REFINE_STOP),
+            reset_every=OPACITY_RESET,
+            absgrad=True,
+            verbose=False)
+    else:
+        strategy = MCMCStrategy(cap_max=budget, verbose=False)
     return strategy, strategy.initialize_state()
 
 
@@ -1148,7 +1067,18 @@ def _ssim(rendered, target, window: int = 11, sigma: float = 1.5):
                * (variance_first + variance_second + contrast))).mean()
 
 
-def _rasterize(parameters: dict, view: dict, device: str, viewmat=None):
+def _rasterize(parameters: dict, view: dict, device: str, viewmat=None,
+               absgrad: bool = False):
+    """Renderar vyn.
+
+    ``absgrad`` måste begäras HÄR och inte bara av strategin: det är
+    ``rasterization`` som hänger beloppsgradienten på ``means2d``, och utan den
+    faller ``DefaultStrategy`` på ``'Tensor' object has no attribute 'absgrad'``.
+
+    2DGS (``rasterization_2dgs`` med normal- och distorsionsvillkor) är prövat
+    och förkastat: överskottet mot ytan föll 2,5 → 1,9 mm men kantskärpan gick
+    0,62 → 0,54× och kornet 5,67 → 5,91×, alltså sämre på båda bildmåtten.
+    """
     import torch
     from gsplat import rasterization
 
@@ -1164,6 +1094,11 @@ def _rasterize(parameters: dict, view: dict, device: str, viewmat=None):
         width=width,
         height=height,
         render_mode="RGB",
+        absgrad=absgrad,
+        # Pinnat, inte ärvt: ``DefaultStrategy`` läser ``info["radii"]`` som
+        # (kameror, gaussare, 2) och faller på ``tuple index out of range`` om
+        # gsplat råkar ha packat ihop dem till (nnz, 2) i stället.
+        packed=False,
     )
     return render[0, ..., :3], info
 

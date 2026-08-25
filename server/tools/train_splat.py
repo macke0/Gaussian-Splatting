@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from spatialfit_server.bundle import ScanBundle  # noqa: E402
 from spatialfit_server.splat import (DEFAULT_ITERATIONS, DEFAULT_MAX_SPLATS,  # noqa: E402
-                                     synthetic_keyframes, train, write_ply, write_spz)
+                                     POSE_LEARNING_RATE, synthetic_keyframes,
+                                     train, write_ply, write_spz)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +39,24 @@ def main(argv: list[str] | None = None) -> int:
                         help="behåll en gaussare per LiDAR-hörn")
     parser.add_argument("--no-refine-poses", action="store_true",
                         help="lås kamerorna vid ARKits poser")
+    parser.add_argument("--pose-lr", type=float, default=POSE_LEARNING_RATE,
+                        help="kamerornas inlärningstakt; sätter hur långt de KAN "
+                             "gå. Felet som ska rättas är 2–3 cm, så följ "
+                             "flyttlogen: rör de sig mycket mindre än så är "
+                             "kopplet för hårt och rummet blir suddigt")
+    parser.add_argument("--holdout", type=int, default=0, metavar="N",
+                        help="träna INTE på vart N:te foto. Satt till 10 blir de "
+                             "undanhållna exakt de `splat_check` mäter mot, så "
+                             "talen gäller vyer modellen aldrig sett. Behövs när "
+                             "det som ändras är poserna: mätt i egna träningsvyer "
+                             "ser en lös kamera alltid bra ut")
+    parser.add_argument("--gradient-densification", action="store_true",
+                        help="förtäta där SKÄRMGRADIENTEN är stor (gsplats "
+                             "DefaultStrategy) i stället för att flytta slocknade "
+                             "gaussare mot ett fast tak (MCMC). Slår samtidigt av "
+                             "MINIMUM_ALPHA och MCMC-straffen, som annars sätter "
+                             "opacitetsnollställningen ur spel. Antalet gaussare "
+                             "blir inte längre exakt PHONE_SPLAT_BUDGET")
     parser.add_argument("--preview", type=int, default=None, metavar="FOTO",
                         help="skriv splatten och fotot sida vid sida bredvid PLY:n")
     arguments = parser.parse_args(argv)
@@ -46,11 +65,18 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         bundle = ScanBundle.load(arguments.directory)
+        if arguments.holdout:
+            kept = [frame for index, frame in enumerate(bundle.keyframes)
+                    if index % arguments.holdout]
+            print(f"tränar på {len(kept)} av {len(bundle.keyframes)} foton")
+            bundle = dataclasses.replace(bundle, keyframes=kept)
         model = train(bundle,
                       iterations=arguments.iterations,
                       max_splats=arguments.max_splats,
                       densify=not arguments.no_densify,
-                      refine_poses=not arguments.no_refine_poses)
+                      refine_poses=not arguments.no_refine_poses,
+                      pose_learning_rate=arguments.pose_lr,
+                      gradient_densification=arguments.gradient_densification)
     except (FileNotFoundError, ValueError, RuntimeError) as error:
         print(f"Gick inte att träna: {error}", file=sys.stderr)
         return 1
