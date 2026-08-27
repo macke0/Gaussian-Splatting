@@ -39,6 +39,16 @@ struct RoomViewerView: View {
     @State private var measuringCoverage = false
     @State private var showsSplat = true
     @State private var showsPhotos = true
+    /// Vilka lager splatvyn ritar. Ett felsökningsreglage: syns smetet redan i
+    /// "Bara splats" sitter det i modellen, syns det först i "Båda" sitter det i
+    /// hopfogningen med den uppmätta ytan.
+    @State private var splatLayers: SplatRoomView.Layers = .both
+    /// Den uppmätta ytan bakom splatten, se `loadBackdrop`.
+    @State private var backdrop: TexturedMesh?
+    @State private var backdropTextureURL: URL?
+    /// SH-graden splatfilen bär. Noll betyder att den är bakad innan servern
+    /// började skriva banden, och då kan den inte bli skarp hur den än ritas.
+    @State private var splatDegree: Int?
     @State private var status: Status = .loading
     @State private var showsProducts = false
     @State private var showsBaking = false
@@ -69,8 +79,14 @@ struct RoomViewerView: View {
                     // gissningar — det är just det som gör dem svåra att se.
                     if let splat, showsSplat, !showsCoverage {
                         SplatRoomView(url: splat, standingAt: viewpoint,
+                                      backdrop: backdrop,
+                                      backdropTextureURL: backdropTextureURL,
+                                      layers: splatLayers,
                                       yaw: $yaw, pitch: $pitch, distance: $distance) { result in
-                            if case .failure = result {
+                            switch result {
+                            case .success(let loaded):
+                                splatDegree = loaded.shDegree
+                            case .failure:
                                 // Meshen finns kvar och duger. Att falla tillbaka
                                 // tyst är fel — vyn ska säga vad du tittar på.
                                 self.splat = nil
@@ -92,6 +108,7 @@ struct RoomViewerView: View {
             }
         }
         .overlay(alignment: .bottom) { hint }
+        .overlay(alignment: .top) { layerPicker }
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -160,6 +177,7 @@ struct RoomViewerView: View {
             guard case .done = phase else { return }
             textured = try? TexturedMeshEntity.make(in: store.directory(for: room))
             splat = store.splatURL(for: room)
+            loadBackdrop()
             showsPhotos = true
             showsSplat = true
             showVariant()
@@ -177,6 +195,23 @@ struct RoomViewerView: View {
 
         } update: { _ in
             applyCamera()
+        }
+    }
+
+    /// Väljer vilka lager splatvyn ritar. Syns bara när det finns två lager att
+    /// välja mellan — utan uppmätt yta finns inget att jämföra med.
+    @ViewBuilder
+    private var layerPicker: some View {
+        if splat != nil, showsSplat, !showsCoverage, backdrop != nil {
+            Picker("Lager", selection: $splatLayers) {
+                ForEach(SplatRoomView.Layers.allCases) { layer in
+                    Text(layer.label).tag(layer)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 300)
+            .padding(.horizontal, 24)
+            .padding(.top, 8)
         }
     }
 
@@ -253,7 +288,7 @@ struct RoomViewerView: View {
                 case .ready where splat != nil && showsSplat:
                     // Splatvyn kan inte lämna rummet — den stämmer bara
                     // inifrån. Se `SplatRoomView.reach`.
-                    Text("Splat · dra för att se dig omkring, nyp för att komma närmare")
+                    splatHint
                 case .ready where splat != nil:
                     // Den bakade ytan är alltid mjukare än splatten som målade
                     // den. Ligger en splat på disk ska ingen tro att smetet är
@@ -269,10 +304,64 @@ struct RoomViewerView: View {
         }
     }
 
+    /// Raden under splatten. Graden står ALLTID utskriven.
+    ///
+    /// Första versionen varnade bara vid grad 0 och teg annars. Men `splatDegree`
+    /// är `nil` tills filen är läst, och tyst-vid-noll är omöjligt att skilja
+    /// från tyst-för-att-allt-är-bra — man får en avläsning som inte går att
+    /// läsa. Ett tal som står där svarar på frågan direkt.
+    @ViewBuilder
+    private var splatHint: some View {
+        switch splatDegree {
+        case nil:
+            Text("Splat · läser…")
+        case 0:
+            // Utan de högre banden är färgen en REST: optimeraren la glas, lack
+            // och släpljus där, och nolltermen ensam ger sot i taket och dis på
+            // väggarna. Det går inte att rita bort.
+            Text("Splat · SH-grad 0 — saknar riktningsberoende färg. Baka om rummet för den skarpa bilden.")
+                .foregroundStyle(.orange)
+        case let degree?:
+            Text("Splat · SH-grad \(degree) · dra för att se dig omkring, nyp för att komma närmare")
+        }
+    }
+
     private var sceneBackground: some View {
         LinearGradient(colors: [Color(red: 0.10, green: 0.11, blue: 0.14),
                                 Color(red: 0.03, green: 0.03, blue: 0.05)],
                        startPoint: .top, endPoint: .bottom)
+    }
+
+    // MARK: - Ytan under splatten
+
+    /// Den uppmätta ytan att lägga bakom splatten.
+    ///
+    /// Den bakade atlasen först — den har fotonas färger. Finns den inte duger
+    /// den råa LiDAR-ytan enfärgad; poängen är att hålen i splatten ska ha
+    /// NÅGOT bakom sig, och en solid grå vägg på rätt plats slår genomsikt.
+    ///
+    /// Läses EN gång, i `load`. `body` körs om vid varje dragrörelse, och att
+    /// avkoda ett par hundra tusen hörn från disk däri gör vyn ospelbar.
+    private static func loadBackdrop(from folder: URL, store: RoomStore,
+                                     room: SavedRoom) -> TexturedMesh? {
+        if let data = try? Data(contentsOf: folder.appending(path: TexturedMesh.meshFilename)),
+           let baked = TexturedMesh(data: data) {
+            return baked
+        }
+        guard let mesh = store.sceneMesh(for: room), !mesh.isEmpty else { return nil }
+        // Utan atlas används aldrig texturkoordinaterna, men rörledningen läser
+        // en per hörn — därför nollor och inte en tom lista.
+        return TexturedMesh(positions: mesh.positions,
+                            normals: mesh.vertexNormals(),
+                            textureCoordinates: Array(repeating: .zero, count: mesh.positions.count),
+                            indices: mesh.indices)
+    }
+
+    private func loadBackdrop() {
+        let folder = store.directory(for: room)
+        backdrop = Self.loadBackdrop(from: folder, store: store, room: room)
+        let texture = folder.appending(path: TexturedMesh.textureFilename)
+        backdropTextureURL = FileManager.default.fileExists(atPath: texture.path) ? texture : nil
     }
 
     // MARK: - Laddning
@@ -295,6 +384,7 @@ struct RoomViewerView: View {
         // Splatten går före allt annat när den finns: den är den enda ytan som
         // inte gått genom utjämning, utglesning och en atlas på vägen hit.
         splat = store.splatURL(for: room)
+        loadBackdrop()
 
         // Serverns bakning är gjord med alla foton och blandar dem per texel.
         // Finns den behöver telefonen inte måla om rummet sämre.
