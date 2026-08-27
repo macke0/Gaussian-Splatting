@@ -62,7 +62,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .atlas import vertex_normals
-from .bundle import Keyframe, ScanBundle, connected_surface, measured_points
+from .bundle import (Keyframe, ScanBundle, connected_surface, measured_points,
+                     sharpness_weights)
 
 log = logging.getLogger(__name__)
 
@@ -190,9 +191,12 @@ MINIMUM_OPACITY = 0.05
 #: 0,90  3 000 000 0,1174 103,7% 4,32×
 #: ===== ========= ====== ====== ==================
 #:
-#: Sista kolumnen är ``tools/korn2.py``. 0,50 och 0,90 är lika bra på kornet, så
-#: det lägre väljs. Väggen skiftar ändå fyra gånger mer än verklighetens.
-MINIMUM_ALPHA = 0.5
+#: Sista kolumnen är ``tools/korn2.py``. Golvet valdes när kornet var det som
+#: syntes, och kolumnen "skärpa" lästes som att 98,9 % vore bättre än 89,7 %.
+#: Båda de premisserna föll: skärpetalet straffar korn och belönar sudd, så tal
+#: över 100 % är SÄMRE, och kornet självt satt i ``MAXIMUM_RADIUS``. Kvar står
+#: L1, som pekar åt noll. Golvet är alltså avstängt — gratis, som svepet visade.
+MINIMUM_ALPHA = 0.0
 
 #: Hur långt en gaussares kulör får avvika från sitt grannskaps. Noll stänger av.
 #: Där FOTOT är jämnt ligger dess kulörspridning på 0,74 grånivåer men
@@ -204,7 +208,11 @@ MINIMUM_ALPHA = 0.5
 #: (0,1163 mot 0,1167), och ett brunt parkettgolv som renderades GRÖNT blir
 #: brunt. Ljushetsbruset stiger 4,4 → 5,0 — samma underbestämning uttryckt i
 #: ljushet — men det läses som yta, medan kulört brus läses som skimmer.
-MAXIMUM_CHROMA = 0.005
+#:
+#: Svept senare: gränsen har ett OPTIMUM, den är inte "hårdare är bättre". Vid
+#: noll lägger sig en rosa slöja över rummet, vid 0,005 är kulören stängd så
+#: hårt att den kostar mer än den ger. 0,05 är botten på kurvan.
+MAXIMUM_CHROMA = 0.05
 
 #: Hur stor ruta som räknas som en gaussares grannskap när kulören kläms.
 #: Vid 2 cm togs bara sex procent av felet trots att klämningen bet (spridningen
@@ -263,12 +271,46 @@ MAXIMUM_RADIUS = 1.0
 #: fyra millimeters klot är bucklig av sig själv — den ulliga stucco-ytan. Med
 #: den här gränsen blir mellersta axeln 7,4 gånger den minsta, alltså riktiga
 #: skivor, och skärpan steg 82 → 86 % vid samma radie. ``SEED_THICKNESS`` ensam
-#: räcker inte: bara tak binder under träningen.
-MAXIMUM_THICKNESS = 0.001
+#: räcker inte: bara tak binder under träningen. Noll stänger av.
+#:
+#: Den där skärpehöjningen var en synvilla: talet stiger av korn lika gärna som
+#: av skärpa, och 1 mm var satt när radietaket ännu gjorde rummet grynigt. Mätt
+#: om med ögat och med L1 är gränsen en SUDDKÄLLA — en millimeter är tunnare än
+#: hälften av det rummet faktiskt består av, och det som inte får plats i en
+#: skiva blir i stället flera överlappande. Därför avstängd.
+MAXIMUM_THICKNESS = 0.0
 
 #: Hur långt från LiDAR-ytan en gaussare får driva. Utan gränsen låg 74 % av
 #: gaussarna mer än 2 cm från ytan och bar 91 % av den synliga massan.
 MAXIMUM_DRIFT = 0.02
+
+#: Hur många grader sfäriska harmoniker färgen får. Noll betyder att varje
+#: gaussare har EN färg, lika från alla håll — det är den sista arkitektoniska
+#: skillnaden mot vanlig 3DGS, som kör grad 3.
+#:
+#: Grad 0 kan inte beskriva en yta som ser olika ut från olika håll: fönsterglas,
+#: lackat trä, blanka vitvaror, en vägg med släpljus. Optimeraren kan bara svara
+#: på den motsägelsen med att smeta ut GEOMETRIN tills medelvärdet stämmer
+#: någorlunda från alla håll, och det syns som grov mjukhet i mellanskalan —
+#: precis det fel som är kvar när klämmorna är avfärdade.
+#:
+#: Mätt: L1 14,75 → 10,99, korn 2,34× → 1,53×, kant 0,22× → 0,27×. Alla tre åt
+#: samma håll, alltså en saknad frihetsgrad snarare än en avvägning.
+#:
+#: Priset är bandbredd, men mycket mindre än befarat: 45 extra tal per gaussare
+#: blir 60,7 MB mot 32,8 för 1,9 M gaussare, inte de 195 MB som stod här förr.
+#: Kvantiseringen lägger de flesta banden nära noll och gzip äter dem.
+#:
+#: Var noll ända tills 2026-08-26, då `write_spz` lärde sig skriva banden. Innan
+#: dess KASTADES de vid exporten, och det var slöjan i appen — nolltermen ensam
+#: är en rest, inte en fristående färg.
+SPHERICAL_HARMONICS = 3
+
+#: Hur mycket långsammare de högre graderna lär sig än grundfärgen. Talet är
+#: 3DGS eget. Utan det skenar de: med grundfärgens takt låg förlusten på 0,25
+#: mot 0,10 vid steg 6 000 och 2,9 av 3 miljoner gaussare klämdes mot ytan varje
+#: steg — lägena jagade en färg som inte stod stilla.
+SH_RATE_DIVISOR = 20
 
 #: Hur ofta varje gaussare får leta upp sin ytpunkt på nytt. Klämningen sker
 #: VARJE steg — se ``_pulled_to_surface``; bara KD-trädsfrågan är dyr. Låg på
@@ -315,6 +357,15 @@ OPACITY_RESET = 3000
 #: (mellersta axeln 1,45 gånger den minsta), alltså hittade optimeraren aldrig dit.
 SEED_THICKNESS = 0.1
 
+#: Låt skarpa foton väga tyngre än suddiga (``bundle.sharpness_weights``).
+#: Träningen tror annars lika mycket på ett foto taget mitt i en sväng som på
+#: ett stillastående, och lär sig att tavelramar ÄR smetar. Mätt på rummet: L1
+#: 11,96 → 10,41, korn 1,39× → 1,19×, kant 0,53× → 0,58× — alla tre åt samma
+#: håll, alltså ingen avvägning. Vikterna spänner bara 0,30–1,12; det är ett
+#: milt ingrepp, för GALLRING av de suddiga knäcker geometrin (suddet klumpar
+#: sig i tid, så en skur ÄR en hel vy).
+WEIGH_SHARPNESS = True
+
 
 def train(bundle: ScanBundle,
           iterations: int = DEFAULT_ITERATIONS,
@@ -324,7 +375,13 @@ def train(bundle: ScanBundle,
           adapt_appearance: bool = True,
           budget: int = PHONE_SPLAT_BUDGET,
           pose_learning_rate: float = POSE_LEARNING_RATE,
-          gradient_densification: bool = GRADIENT_DENSIFICATION) -> SplatModel:
+          minimum_alpha: float = MINIMUM_ALPHA,
+          maximum_chroma: float = MAXIMUM_CHROMA,
+          maximum_drift: float = MAXIMUM_DRIFT,
+          maximum_thickness: float = MAXIMUM_THICKNESS,
+          sh_degree: int = SPHERICAL_HARMONICS,
+          gradient_densification: bool = GRADIENT_DENSIFICATION,
+          weigh_sharpness: bool = WEIGH_SHARPNESS) -> SplatModel:
     """Passar gaussare mot fotona. Kräver CUDA.
 
     ``budget`` är telefonens tak och gäller redan här, genom MCMC-strategin.
@@ -357,14 +414,29 @@ def train(bundle: ScanBundle,
         "opacities": torch.nn.Parameter(torch.full(
             (len(means),), float(np.log(INITIAL_OPACITY / (1 - INITIAL_OPACITY))), device=device)),
         # Grått är en ärligare gissning än svart: förlusten drar det åt rätt
-        # håll oavsett rummets ton.
-        "colors": torch.nn.Parameter(torch.full((len(means), 3), 0.5, device=device)),
+        # håll oavsett rummets ton. Vid grad 0 är färgen RGB rakt av; över noll
+        # är den SH-nolltermen, och gsplat lägger självt på 0,5 efter att ha
+        # summerat koefficienterna — då är noll samma grå.
+        "colors": torch.nn.Parameter(
+            torch.full((len(means), 3), 0.5, device=device) if sh_degree == 0
+            else torch.zeros((len(means), 1, 3), device=device)),
     })
+    if sh_degree:
+        # De högre graderna är en EGEN parameter, inte fler kolumner i den förra.
+        # De måste gå långsammare — 3DGS ger dem en tjugondel av grundfärgens
+        # takt — och gsplat kan bara ge olika takt åt olika parametrar. Med samma
+        # takt som grundfärgen skenar de: förlusten låg på 0,25 mot 0,10 vid steg
+        # 6 000 och 2,9 av 3 miljoner gaussare klämdes mot ytan varje steg,
+        # eftersom lägena jagade en färg som inte stod stilla.
+        parameters["sh"] = torch.nn.Parameter(
+            torch.zeros((len(means), (sh_degree + 1) ** 2 - 1, 3), device=device))
     # gsplats förtätningsstrategi flyttar rader i både parametrar och Adams
     # tillstånd, och kan bara göra det när varje parameter har en egen
     # optimerare. Därför en per namn i stället för en med fem grupper.
     scene_scale = max(float(np.linalg.norm(means.max(axis=0) - means.min(axis=0)) / 2), 1e-3)
     rates = dict(LEARNING_RATES, means=MEANS_LEARNING_RATE * scene_scale)
+    if sh_degree:
+        rates["sh"] = LEARNING_RATES["colors"] / SH_RATE_DIVISOR
     optimizers = {name: torch.optim.Adam([{"params": parameters[name], "lr": rate, "name": name}])
                   for name, rate in rates.items()}
 
@@ -394,6 +466,12 @@ def train(bundle: ScanBundle,
 
     views = [_view(frame, device) for frame in frames]
     generator = np.random.default_rng(0)
+
+    weights = np.ones(len(views))
+    if weigh_sharpness:
+        weights = sharpness_weights(frames)
+        log.info("fotovikter: %.2f som lägst, %.2f som högst, %d under halva",
+                 weights.min(), weights.max(), int((weights < 0.5).sum()))
 
     # Kamerajusteringen hålls utanför `optimizers`: den ordboken tillhör
     # förtätningsstrategin, som förutsätter att varje post är en gaussarlista.
@@ -428,8 +506,10 @@ def train(bundle: ScanBundle,
             rendered = _exposed(rendered, appearance[index] - appearance.mean(dim=0))
 
         target = view["image"].float() / 255.0
-        loss = ((1 - SSIM_WEIGHT) * (rendered - target).abs().mean()
-                + SSIM_WEIGHT * (1 - _ssim(rendered, target)))
+        # Bara den fotometriska delen viktas. Straffen nedan är villkor på
+        # modellen själv och har inget med fotot att göra.
+        loss = weights[index] * ((1 - SSIM_WEIGHT) * (rendered - target).abs().mean()
+                                 + SSIM_WEIGHT * (1 - _ssim(rendered, target)))
         if strategy is not None and not gradient_driven:
             # Med ett fast antal gaussare är det billigt att lägga sig som dimma
             # över hela rummet: många halvgenomskinliga klumpar sänker
@@ -475,32 +555,48 @@ def train(bundle: ScanBundle,
         schedule.step()
 
         with torch.no_grad():
-            parameters["colors"].clamp_(0.0, 1.0)
+            # Vid grad 0 ÄR färgen RGB och taket är [0, 1]. Över noll är bara
+            # nolltermen en färg, och de högre graderna ska vara fria — det är i
+            # dem vinkelberoendet bor. Att klämma dem vore att stänga av det man
+            # just slagit på.
+            if sh_degree == 0:
+                parameters["colors"].clamp_(0.0, 1.0)
+            else:
+                parameters["colors"][:, 0].clamp_(-0.5 / SH_DC, 0.5 / SH_DC)
             parameters["scales"].clamp_(max=float(np.log(MAXIMUM_RADIUS)))
             # Och den tunnaste leden för sig, annars blir gaussaren ett klot mot
             # radietaket. Vilken av de tre axlarna som är tunnast bestäms av
             # kvaternionen och byts under träningen, så den måste letas upp varje
             # gång i stället för att pekas ut en gång för alla.
-            thinnest = parameters["scales"].argmin(dim=1, keepdim=True)
-            parameters["scales"].scatter_(
-                1, thinnest, parameters["scales"].gather(1, thinnest)
-                .clamp(max=float(np.log(MAXIMUM_THICKNESS))))
+            if maximum_thickness > 0:
+                thinnest = parameters["scales"].argmin(dim=1, keepdim=True)
+                parameters["scales"].scatter_(
+                    1, thinnest, parameters["scales"].gather(1, thinnest)
+                    .clamp(max=float(np.log(maximum_thickness))))
             # Golvet är MCMC:s. Standardstrategin nollställer opaciteten med
             # jämna mellanrum för att låta dimman dö, och ett golv som klämmer
             # varje steg gör den nollställningen verkningslös — då gallras aldrig
             # någon gaussare bort och hela mekanismen är satt ur spel.
-            if MINIMUM_ALPHA > 0 and not gradient_driven:
+            if minimum_alpha > 0 and not gradient_driven:
                 parameters["opacities"].clamp_(
-                    min=float(np.log(MINIMUM_ALPHA / (1 - MINIMUM_ALPHA))))
+                    min=float(np.log(minimum_alpha / (1 - minimum_alpha))))
 
             means = parameters["means"]
-            if MAXIMUM_CHROMA > 0:
+            if maximum_chroma > 0:
                 # Rutnätet räknas om lika sällan som ytankarna: gaussarna rör sig
                 # bråkdelar av en rutstorlek mellan två omräkningar.
                 if neighbourhood is None or len(neighbourhood) != len(means) \
                         or step % SURFACE_INTERVAL == 0:
                     neighbourhood = _neighbourhoods(means, CHROMA_NEIGHBOURHOOD)
-                _limit_chroma(parameters["colors"], neighbourhood, MAXIMUM_CHROMA)
+                if sh_degree == 0:
+                    _limit_chroma(parameters["colors"], neighbourhood, maximum_chroma)
+                else:
+                    # ``maximum_chroma`` är mätt i RGB, så nolltermen måste dit
+                    # och tillbaka. De högre graderna lämnas: kulörbruset som
+                    # klämman finns för sitter i grundfärgen.
+                    base = parameters["colors"][:, 0] * SH_DC + 0.5
+                    _limit_chroma(base, neighbourhood, maximum_chroma)
+                    parameters["colors"][:, 0] = (base - 0.5) / SH_DC
             # Ankarna letas upp på nytt när de blivit fel: strategin flyttar de
             # slocknade gaussarna och lägger till nya, och en gaussare som
             # teleporterats hör inte längre till den ytpunkt den hörde till förut.
@@ -508,7 +604,7 @@ def train(bundle: ScanBundle,
                     or step % SURFACE_INTERVAL == 0):
                 _, nearest = tree.query(means.detach().cpu().numpy(), k=1, workers=-1)
                 anchors = anchor_points[torch.as_tensor(nearest, device=device)]
-            moved, pulled = _pulled_to_surface(means, anchors)
+            moved, pulled = _pulled_to_surface(means, anchors, maximum_drift)
             if pulled:
                 means.copy_(moved)
 
@@ -529,12 +625,18 @@ def train(bundle: ScanBundle,
                  float((gains[:, 2] / gains[:, 1]).min()),
                  float((gains[:, 2] / gains[:, 1]).max()))
 
+    # Modellen bär de sfäriska harmonikerna hopfogade; att de tränats som två
+    # parametrar är en fråga om inlärningstakt och angår ingen efteråt.
+    colors = parameters["colors"]
+    if "sh" in parameters:
+        colors = torch.cat([colors, parameters["sh"]], dim=1)
+
     model = SplatModel(
         means=parameters["means"].detach().cpu().numpy(),
         quats=parameters["quats"].detach().cpu().numpy(),
         scales=parameters["scales"].detach().cpu().numpy(),
         opacities=parameters["opacities"].detach().cpu().numpy(),
-        colors=parameters["colors"].detach().cpu().numpy(),
+        colors=colors.detach().cpu().numpy(),
         poses=_refined(frames, views, deltas) if deltas is not None else None,
     )
     return _trimmed(model, bundle)
@@ -559,20 +661,30 @@ def write_ply(model: SplatModel, path) -> None:
     from pathlib import Path
 
     count = len(model.means)
+    # Är färgen sfäriska harmoniker ligger nolltermen först och resten efter, och
+    # formatet vill ha dem kanalvis: alla röda koefficienter, alla gröna, alla
+    # blå. Vid grad 0 blir listan tom och filen exakt densamma som förut.
+    rest = model.colors.shape[1] - 1 if model.colors.ndim == 3 else 0
     fields = (["x", "y", "z", "nx", "ny", "nz"]
               + [f"f_dc_{channel}" for channel in range(3)]
+              + [f"f_rest_{index}" for index in range(rest * 3)]
               + ["opacity"]
               + [f"scale_{axis}" for axis in range(3)]
               + [f"rot_{component}" for component in range(4)])
 
     order = np.random.default_rng(0).permutation(count)
+    colors = model.colors[order]
     table = np.zeros((count, len(fields)), np.float32)
     table[:, 0:3] = model.means[order]
     # Normalerna används inte av någon visare men hör till formatet.
-    table[:, 6:9] = (model.colors[order] - 0.5) / SH_DC
-    table[:, 9] = model.opacities[order]
-    table[:, 10:13] = model.scales[order]
-    table[:, 13:17] = model.quats[order]
+    if rest:
+        table[:, 6:9] = colors[:, 0]
+        table[:, 9:9 + rest * 3] = colors[:, 1:].transpose(0, 2, 1).reshape(count, -1)
+    else:
+        table[:, 6:9] = (colors - 0.5) / SH_DC
+    table[:, 9 + rest * 3] = model.opacities[order]
+    table[:, 10 + rest * 3:13 + rest * 3] = model.scales[order]
+    table[:, 13 + rest * 3:17 + rest * 3] = model.quats[order]
 
     header = "\n".join(["ply", "format binary_little_endian 1.0",
                         f"element vertex {count}"]
@@ -592,6 +704,17 @@ _SPZ_FRACTIONAL_BITS = 12
 #: Formatets egen skalning av SH-nollterm innan den kvantiseras till en byte.
 #: Fast tal i Niantics format, inte något att ställa in.
 _SPZ_COLOR_SCALE = 0.15
+
+#: Teckenbyte per SH-koefficient när y och z byter tecken, som läget gör. Banden
+#: är udda och jämna funktioner av riktningen, så bara vissa vänder. Talen är
+#: ``coordinateConverter`` ur `spz-swift` utvärderad med x=1, y=−1, z=−1; det är
+#: samma byte som ``flip`` nedan gör på läge och kvaternion.
+_SPZ_SH_FLIP = np.array([-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+                         -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0])
+
+#: Bitar per SH-koefficient: fem för grad 1, fyra för resten. Formatets eget val
+#: — de första banden bär mest energi och tål minst kvantisering.
+_SPZ_SH_BITS = np.array([5] * 3 + [4] * 12)
 
 
 def write_spz(model: SplatModel, path) -> None:
@@ -617,6 +740,12 @@ def write_spz(model: SplatModel, path) -> None:
     till PLY-konventionen "höger, ned, fram" genom att byta tecken på y och z.
     Vår PLY skrivs redan i ARKits system och läses utan omräkning, så här måste
     samma teckenbyte göras i förväg för att de två filerna ska visa samma rum.
+    Teckenbytet gäller ÄVEN SH-banden, men inte alla lika (``_SPZ_SH_FLIP``).
+
+    Sfäriska harmoniker skrivs om modellen har dem. Det gjorde formatet inte
+    förr, och det var slöjans verkliga orsak: telefonen fick en modell vars
+    optimerare hade lagt glas, lack och släpljus i band som sedan kastades.
+    MetalSplatter renderar grad 0–3 sedan 1.0.1 hela vägen ned i shadern.
 
     Ordningen slumpas av samma skäl som i ``write_ply``.
     """
@@ -638,8 +767,20 @@ def write_spz(model: SplatModel, path) -> None:
     # Aldrig 0 eller 255: läsaren tar logit av talet, och båda ändarna är
     # oändligheter som förgiftar varje gaussare de rör vid.
     alphas = _to_byte(1 / (1 + np.exp(-model.opacities[order])) * 255).clip(1, 254)
-    colors = _to_byte(((model.colors[order] - 0.5) / SH_DC
-                       * _SPZ_COLOR_SCALE + 0.5) * 255)
+
+    # Är modellen SH-tränad ligger nolltermen först och banden efter. Banden
+    # SKA med: de bär glas, lack och släpljus, och utan dem är nolltermen en
+    # rest som aldrig var tänkt att stå ensam — mätt som en slöja över hela
+    # rummet (L1 25,90 mot 29,88, inbördes skillnad 19,16).
+    # Formen avgör, inte antalet band: en modell tränad med grad 0 har ändå
+    # koefficientaxeln kvar, och då ska nolltermen räknas om till färg precis
+    # som annars — men ingen SH-sektion skrivas.
+    harmonics = model.colors[order]
+    spherical = harmonics.ndim == 3
+    bands = harmonics.shape[1] - 1 if spherical else 0
+    base = harmonics[:, 0] * SH_DC + 0.5 if spherical else harmonics
+
+    colors = _to_byte(((base - 0.5) / SH_DC * _SPZ_COLOR_SCALE + 0.5) * 255)
     scales = _to_byte((model.scales[order] + 10) * 16)
 
     # wxyz hos oss, xyzw i formatet, och teckenbytet på xyz på köpet.
@@ -647,12 +788,37 @@ def write_spz(model: SplatModel, path) -> None:
     rotations = _smallest_three(
         quats / np.maximum(np.linalg.norm(quats, axis=1, keepdims=True), 1e-12))
 
-    header = struct.pack("<IIIBBBB", 0x5053474E, 3, count, 0,
+    parts = [positions, alphas, colors, scales, rotations]
+    if bands:
+        parts.append(_spz_spherical_harmonics(harmonics[:, 1:]))
+
+    # Graden ur antalet band: (grad + 1)² koefficienter, nolltermen borträknad.
+    degree = round((bands + 1) ** 0.5) - 1
+    header = struct.pack("<IIIBBBB", 0x5053474E, 3, count, degree,
                          _SPZ_FRACTIONAL_BITS, 0, 0)
-    body = b"".join(part.tobytes() for part in
-                    (positions, alphas, colors, scales, rotations))
+    body = b"".join(part.tobytes() for part in parts)
     Path(path).write_bytes(gzip.compress(header + body, 6))
     log.info("skrev %d gaussare till %s", count, path)
+
+
+def _spz_spherical_harmonics(coefficients: np.ndarray) -> np.ndarray:
+    """De högre SH-banden, ett byte per koefficient.
+
+    ``coefficients`` är (gaussare, band, kanal) UTAN nolltermen. Formatet vill ha
+    dem bandvis med de tre kanalerna intill varandra, vilket redan är
+    minnesordningen — därför räcker en ``reshape``.
+
+    Kvantiseringen är formatets egen: talet skalas med 128, förskjuts till mitten
+    av ett byte och avrundas sedan till närmaste hink. Hinken är större för de
+    högre banden, som bär mindre energi.
+    """
+    count, bands = coefficients.shape[:2]
+    flipped = coefficients * _SPZ_SH_FLIP[:bands, None]
+    buckets = (1 << (8 - _SPZ_SH_BITS[:bands]))[None, :, None]
+
+    quantised = np.rint(flipped.astype(np.float64) * 128.0).astype(np.int32) + 128
+    quantised = (quantised + buckets // 2) // buckets * buckets
+    return quantised.clip(0, 255).astype(np.uint8).reshape(count, -1)
 
 
 def _to_byte(values: np.ndarray) -> np.ndarray:
@@ -1083,12 +1249,22 @@ def _rasterize(parameters: dict, view: dict, device: str, viewmat=None,
     from gsplat import rasterization
 
     width, height = view["size"]
+    # Graden läses ur formen i stället för att skickas med: en färg per gaussare
+    # är (n, 3), sfäriska harmoniker (n, k, 3). Då kan varje anropare — träning,
+    # syntetiska keyframes, verktygen — mata in en modell utan att veta vilket.
+    # Träningen håller de högre graderna för sig för takten skull och fogar ihop
+    # dem här; en färdig modell bär dem redan hopfogade.
+    colors = parameters["colors"]
+    if "sh" in parameters:
+        colors = torch.cat([colors, parameters["sh"]], dim=1)
     render, _, info = rasterization(
         means=parameters["means"],
         quats=torch.nn.functional.normalize(parameters["quats"], dim=-1),
         scales=torch.exp(parameters["scales"]),
         opacities=torch.sigmoid(parameters["opacities"]),
-        colors=parameters["colors"],
+        colors=colors,
+        sh_degree=(round(colors.shape[1] ** 0.5) - 1 if colors.dim() == 3
+                   else None),
         viewmats=view["viewmat"] if viewmat is None else viewmat,
         Ks=view["K"],
         width=width,

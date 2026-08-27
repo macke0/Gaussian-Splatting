@@ -7,6 +7,7 @@ vackert renderat men fel rum, och det syns inte i en förlustkurva.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -236,10 +237,12 @@ def _read_spz(path):
 
     raw = gzip.decompress(Path(path).read_bytes())
     magic, version, count, sh_degree, bits, flags, _ = struct.unpack_from("<IIIBBBB", raw)
-    assert magic == 0x5053474E and version == 3 and sh_degree == 0 and flags == 0
+    assert magic == 0x5053474E and version == 3 and flags == 0
 
+    # (grad + 1)² koefficienter, nolltermen borträknad — den ligger i färgen.
+    bands = (sh_degree + 1) ** 2 - 1
     body = np.frombuffer(raw, np.uint8, offset=16)
-    lengths = (count * 9, count, count * 3, count * 3, count * 4)
+    lengths = (count * 9, count, count * 3, count * 3, count * 4, count * bands * 3)
     edges = np.cumsum((0,) + lengths)
     parts = [body[start:stop] for start, stop in zip(edges, edges[1:])]
 
@@ -268,7 +271,15 @@ def _read_spz(path):
         np.maximum(0, 1 - (xyzw ** 2).sum(axis=1)))
 
     xyzw[:, :3] *= flip
-    return means, xyzw[:, [3, 0, 1, 2]], scales, opacities, colors
+
+    # SH-banden: ett byte styck kring 128, och samma teckenbyte som läget fick
+    # men bandvis — ``coordinateConverter`` i `spz-swift` med x=1, y=−1, z=−1.
+    sh_flip = np.array([-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+                        -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0])[:bands]
+    harmonics = ((parts[5].reshape(count, bands, 3).astype(np.float64) - 128) / 128
+                 * sh_flip[:, None]) if bands else None
+
+    return means, xyzw[:, [3, 0, 1, 2]], scales, opacities, colors, harmonics
 
 
 def test_spz_gar_att_lasa_tillbaka(tmp_path):
@@ -285,7 +296,9 @@ def test_spz_gar_att_lasa_tillbaka(tmp_path):
         colors=generator.uniform(0.05, 0.95, (64, 3)).astype(np.float32))
 
     write_spz(model, tmp_path / "splat.spz")
-    means, read_quats, scales, opacities, colors = _read_spz(tmp_path / "splat.spz")
+    means, read_quats, scales, opacities, colors, harmonics = _read_spz(
+        tmp_path / "splat.spz")
+    assert harmonics is None
 
     # Ordningen slumpas i skrivaren, så jämförelsen sker mot samma permutation.
     order = np.random.default_rng(0).permutation(64)
@@ -301,6 +314,94 @@ def test_spz_gar_att_lasa_tillbaka(tmp_path):
     # vridning.
     turned = np.abs((read_quats * model.quats[order]).sum(axis=1))
     assert np.degrees(2 * np.arccos(turned.clip(0, 1))).max() < 1.0
+
+
+def _sh_model(degree: int, count: int = 64) -> SplatModel:
+    """En modell med sfäriska harmoniker, (grad + 1)² koefficienter per kanal."""
+    generator = np.random.default_rng(1)
+    quats = generator.normal(size=(count, 4)).astype(np.float32)
+    quats /= np.linalg.norm(quats, axis=1, keepdims=True)
+    return SplatModel(
+        means=generator.uniform(-4, 4, (count, 3)).astype(np.float32),
+        quats=quats,
+        scales=generator.uniform(-6, -2, (count, 3)).astype(np.float32),
+        opacities=generator.uniform(-3, 3, count).astype(np.float32),
+        # Banden hålls inom ±0,5: större tal än så mättar formatets byte, och då
+        # hade provet mätt klippningen i stället för överföringen.
+        colors=generator.uniform(-0.5, 0.5,
+                                 (count, (degree + 1) ** 2, 3)).astype(np.float32))
+
+
+@pytest.mark.parametrize("degree", (1, 2, 3))
+def test_spz_bar_de_hogre_sh_banden(tmp_path, degree):
+    """Slöjan i appen var att de här banden aldrig lämnade servern.
+
+    Nolltermen ensam är inte "modellen minus finess" utan en REST: optimeraren
+    lägger glas, lack och släpljus i banden, så kastas de blir det som är kvar
+    fel snarare än fattigt.
+    """
+    model = _sh_model(degree)
+
+    write_spz(model, tmp_path / "splat.spz")
+    *_, colors, harmonics = _read_spz(tmp_path / "splat.spz")
+
+    order = np.random.default_rng(0).permutation(len(model.means))
+    assert harmonics is not None
+    assert harmonics.shape == (len(model.means), (degree + 1) ** 2 - 1, 3)
+    # Fyra bitar för de högsta banden ger hinkar om 16/128 = 0,125, alltså en
+    # halv hink som värsta avrundningsfel.
+    assert np.abs(harmonics - model.colors[order][:, 1:]).max() < 0.07
+    # Nolltermen räknas om till färg och får inte ha följt med orörd.
+    assert np.allclose(colors, model.colors[order][:, 0] * SH_DC + 0.5, atol=0.02)
+
+
+@pytest.mark.parametrize("degree", (0, 1, 2, 3))
+def test_matverktygets_spz_lasare_ger_tillbaka_modellen(tmp_path, degree):
+    """``tools/splat_check.read_spz`` måste landa i samma konvention som skrivaren.
+
+    Läsaren finns för att kunna mäta det TELEFONEN fick i stället för en granne
+    till det, och den är därför det enda ögat vi har på den filen. Går den fel
+    ser modellen trasig ut fast den är hel — vilket hände: ``_SPZ_COLOR_SCALE``
+    vänder tillbaka till den råa SH-nolltermen, inte till färgen, och en
+    delning med ``SH_DC`` för mycket blev en kontraststräckning kring grått som
+    blåste ut varje dager. Ett halvt dygns slutsatser drogs ur den bilden.
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    from splat_check import read_spz
+
+    model = _sh_model(degree)
+    write_spz(model, tmp_path / "splat.spz")
+    read = read_spz(tmp_path / "splat.spz")
+
+    order = np.random.default_rng(0).permutation(len(model.means))
+    if degree:
+        # Med band bär modellen den RÅA nolltermen, precis som ``write_ply``
+        # och rasteraren väntar sig.
+        assert read.colors.shape == (len(model.means), (degree + 1) ** 2, 3)
+        assert np.allclose(read.colors[:, 0], model.colors[order][:, 0], atol=0.07)
+        assert np.abs(read.colors[:, 1:] - model.colors[order][:, 1:]).max() < 0.07
+    else:
+        # Utan band finns ingen koefficientaxel kvar, och färgen är färg.
+        assert read.colors.shape == (len(model.means), 3)
+        assert np.allclose(read.colors, model.colors[order][:, 0] * SH_DC + 0.5,
+                           atol=0.02)
+
+    assert np.allclose(read.means, model.means[order], atol=3e-4)
+    assert np.allclose(read.scales, model.scales[order], atol=0.04)
+    assert np.allclose(read.opacities, model.opacities[order], atol=0.05)
+
+
+def test_spz_utan_sh_ar_ororda_bytes(tmp_path):
+    """Grad 0 ska ge exakt samma fil som förr — ändringen får inte kosta något
+    för de rum som inte tränats med harmoniker."""
+    model = _sh_model(0)
+    flat = dataclasses.replace(model, colors=model.colors[:, 0] * SH_DC + 0.5)
+
+    write_spz(model, tmp_path / "med.spz")
+    write_spz(flat, tmp_path / "utan.spz")
+
+    assert (tmp_path / "med.spz").read_bytes() == (tmp_path / "utan.spz").read_bytes()
 
 
 def test_spz_ar_mycket_mindre_an_ply(tmp_path):

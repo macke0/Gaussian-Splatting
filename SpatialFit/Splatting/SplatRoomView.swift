@@ -91,17 +91,50 @@ private let chunkSize = 50_000
 ///
 /// Filen på disk rörs inte: den är en vanlig 3DGS-fil och ska gå att öppna i
 /// vilken annan visare som helst.
+///
+/// **De högre SH-banden MÅSTE följa med.** Den första versionen läste
+/// `point.color.asSRGBFloat` — som bara är nolltermen, `0,5 + SH_C0·sh[0]` —
+/// och skrev tillbaka EN koefficient. Då blev varje gaussare grad 0, och
+/// `SplatChunk` läser graden ur första punkten, så shadern tog sin
+/// `SHDegree0`-snabbväg och banden nådde aldrig GPU:n. Det är precis samma fel
+/// som `write_spz` hade på servern: optimeraren LÄGGER glas, lack och släpljus
+/// i banden, så nolltermen är en rest som aldrig var tänkt att stå ensam.
+/// Uppmätt på samma modell är skillnaden mellan full SH och bara nollterm
+/// L1 19,16 — sot i taket, dis på väggarna, en parkett utan värme.
 private func matchingTraining(_ points: [SplatPoint]) -> [SplatPoint] {
     points.map { point in
         var point = point
-        let color = point.color.asSRGBFloat
-        let compensated = SIMD3(pow(color.x, 1 / 2.2),
-                                pow(color.y, 1 / 2.2),
-                                pow(color.z, 1 / 2.2))
-        point.color = .sphericalHarmonicFloat(
-            [(compensated - 0.5) * SplatPoint.Color.INV_SH_C0])
+        let bands = point.color.asSphericalHarmonicFloat
+        // Shaderns egen nollterm, utan `asSRGBFloat`s övre klipp — den kapar
+        // högdagrarna innan gammat ens hunnit räknas.
+        let base = simd_max(SplatPoint.Color.SH_C0 * bands[0] + 0.5, .zero)
+        let compensated = SIMD3(pow(base.x, 1 / 2.2),
+                                pow(base.y, 1 / 2.2),
+                                pow(base.z, 1 / 2.2))
+        var corrected = [(compensated - 0.5) * SplatPoint.Color.INV_SH_C0]
+
+        if bands.count > 1 {
+            // Banden är avvikelser KRING nolltermen, och `pow(1/2.2)` trycker
+            // ihop skalan olika mycket beroende på hur ljust det är. Rätt
+            // storlek i det ihoptryckta rummet är därför derivatan gånger den
+            // gamla — kedjeregeln, exakt så länge avvikelsen är liten, vilket
+            // den är. Utan skalningen blir riktningsberoendet överdrivet i
+            // skuggorna och för svagt i dagrarna.
+            let slope = SIMD3(gammaSlope(base.x), gammaSlope(base.y), gammaSlope(base.z))
+            for band in bands.dropFirst() { corrected.append(band * slope) }
+        }
+        point.color = .sphericalHarmonicFloat(corrected)
         return point
     }
+}
+
+/// Derivatan av `c^(1/2.2)`, med ett golv på färgen.
+///
+/// Lutningen växer utan gräns mot svart — vid noll är den oändlig — och
+/// linjäriseringen gäller ändå inte där. Två procent ljus kapar den vid knappt
+/// fyra, vilket är så mycket riktningsberoende ett nästan svart område kan bära.
+private func gammaSlope(_ color: Float) -> Float {
+    (1 / 2.2) * pow(max(color, 0.02), 1 / 2.2 - 1)
 }
 
 /// Lådan punkterna ligger i, eventuellt med ytterkanterna bortklippta.
