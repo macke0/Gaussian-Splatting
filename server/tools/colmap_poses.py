@@ -27,10 +27,9 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from spatialfit_server.bundle import ScanBundle  # noqa: E402
-from pose_check import _umeyama  # noqa: E402
+from spatialfit_server.poses import umeyama as _umeyama  # noqa: E402
 
 
 def _largest(directory: Path):

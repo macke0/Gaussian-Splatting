@@ -90,7 +90,7 @@ def bake_room(directory: Path,
     unwrapped = atlas_module.rasterize(positions, normals, uvs, faces, atlas_size)
     log.info("atlasen täcker %.1f %% av ytan", unwrapped.coverage * 100)
 
-    views, model = _painting_views(bundle, color_source)
+    views, model = _painting_views(bundle, directory, color_source)
     result = bake(unwrapped, views)
     log.info("%.1f %% av texlarna såg minst ett foto", result.seen_fraction * 100)
 
@@ -102,19 +102,33 @@ def bake_room(directory: Path,
                      splat=model)
 
 
-def _painting_views(bundle: "ScanBundle", color_source: str) -> tuple[list, object | None]:
+def _painting_views(bundle: "ScanBundle", directory: Path,
+                    color_source: str) -> tuple[list, object | None]:
     """Fotona att måla med — antingen kamerans egna eller splattens renderade.
 
     Att låta splatten lämna ifrån sig ``Keyframe`` i stället för färg direkt gör
     att ``bake`` inte behöver veta att den finns: viktning, skymningstest och
     utfyllnad fungerar likadant på en renderad vy som på ett foto.
+
+    SfM-steget ligger här och inte i ``bake_room`` med flit. ``blend`` ska
+    fortsätta vara vägen som bara kräver CPU och går på minuter; splatten kräver
+    ändå CUDA och en kvart, och det är bara den som lider av posefelet.
     """
     if color_source == "blend":
         return bundle.keyframes, None
 
+    from .poses import refined
     from .splat import synthetic_keyframes, train
 
-    model = train(bundle)
+    # Gradientstyrd förtätning och COLMAP-poser hör ihop. Den lägger gaussare
+    # där bilden har kontrast, och med ARKits tolv millimeters posefel är hälften
+    # av den kontrasten inbillad — resultatet blir flygare. På lösta poser är den
+    # i stället det som gör bilden skarp, med hälften så många gaussare.
+    posed = refined(bundle, directory)
+    if posed is not None:
+        bundle = posed
+
+    model = train(bundle, gradient_densification=posed is not None)
     log.info("tränade %d gaussare", len(model))
     return synthetic_keyframes(model, bundle), model
 
