@@ -353,16 +353,13 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
                                                  sampleCount: sampleCount,
                                                  maxViewCount: 1,
                                                  maxSimultaneousRenders: 3)
-                var pending: [SplatPoint] = []
                 var loaded = 0
                 // Graden filen bär. Läses ur punkterna som de kom, innan
                 // `matchingTraining` rört dem.
                 var degree = 0
 
-                for try await batch in try await AutodetectSceneReader(url).read() {
-                    pending.append(contentsOf: batch)
-                    guard pending.count >= chunkSize else { continue }
-
+                // Klumpen är färdig: lämna den till GPU:n och släpp punkterna.
+                func take(_ pending: [SplatPoint]) async throws {
                     loaded += pending.count
                     degree = max(degree, Int(pending[0].color.shDegree.rawValue))
                     await renderer.addChunk(try SplatChunk(
@@ -372,18 +369,19 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
                                      covering: bounds(of: pending,
                                                       trimming: asAuthored ? 0.1 : 0),
                                      filling: roaming ? [] : occupancy(of: pending))
-                    pending.removeAll(keepingCapacity: true)
                 }
-                if !pending.isEmpty {
-                    loaded += pending.count
-                    degree = max(degree, Int(pending[0].color.shDegree.rawValue))
-                    await renderer.addChunk(try SplatChunk(
-                        device: device,
-                        from: asAuthored ? pending : matchingTraining(pending)))
-                    await self?.show(renderer,
-                                     covering: bounds(of: pending,
-                                                      trimming: asAuthored ? 0.1 : 0),
-                                     filling: roaming ? [] : occupancy(of: pending))
+
+                if url.pathExtension.lowercased() == "spz" {
+                    _ = try await SPZStream.read(url, batch: chunkSize, handle: take)
+                } else {
+                    var pending: [SplatPoint] = []
+                    for try await batch in try await AutodetectSceneReader(url).read() {
+                        pending.append(contentsOf: batch)
+                        guard pending.count >= chunkSize else { continue }
+                        try await take(pending)
+                        pending.removeAll(keepingCapacity: true)
+                    }
+                    if !pending.isEmpty { try await take(pending) }
                 }
                 await onLoad(.success(.init(count: loaded, shDegree: degree)))
             } catch {
