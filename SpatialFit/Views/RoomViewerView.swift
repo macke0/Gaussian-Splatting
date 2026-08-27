@@ -31,6 +31,12 @@ struct RoomViewerView: View {
     @State private var textured: Entity?
     /// Splatten från servern. Den är utseendet; meshen är måtten.
     @State private var splat: URL?
+    /// Samma yta färgad efter hur väl skanningen täckte den. Räknas fram först
+    /// när kunden ber om den — mätningen läser in alla djupkartor.
+    @State private var coverage: Entity?
+    @State private var coverageReport: SurfaceCoverage.Report?
+    @State private var showsCoverage = false
+    @State private var measuringCoverage = false
     @State private var showsSplat = true
     @State private var showsPhotos = true
     @State private var status: Status = .loading
@@ -58,7 +64,10 @@ struct RoomViewerView: View {
                 }
             } else {
                 Group {
-                    if let splat, showsSplat {
+                    // Täckningen ritas på mesh:en, inte på splatten. Poängen är
+                    // att se var mätningen SAKNAS, och splatten fyller hålen med
+                    // gissningar — det är just det som gör dem svåra att se.
+                    if let splat, showsSplat, !showsCoverage {
                         SplatRoomView(url: splat, standingAt: viewpoint,
                                       yaw: $yaw, pitch: $pitch, distance: $distance) { result in
                             if case .failure = result {
@@ -89,7 +98,19 @@ struct RoomViewerView: View {
             // Knapparna heter det de LEDER till, inte det som redan visas. Hette
             // de tvärtom läste man "Splat" som vägen till splatten och tryckte
             // sig bort från den.
-            if splat != nil {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(showsCoverage ? "Visa rummet" : "Täckning",
+                       systemImage: showsCoverage ? "cube" : "circle.lefthalf.filled") {
+                    if showsCoverage {
+                        showsCoverage = false
+                        showVariant()
+                    } else {
+                        Task { await showCoverage() }
+                    }
+                }
+                .disabled(measuringCoverage)
+            }
+            if splat != nil && !showsCoverage {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(showsSplat ? "Visa ytan" : "Visa splatten",
                            systemImage: showsSplat ? "square.grid.3x3" : "sparkles") {
@@ -97,7 +118,7 @@ struct RoomViewerView: View {
                     }
                 }
             }
-            if textured != nil && !showsSplat {
+            if textured != nil && !showsSplat && !showsCoverage {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(showsPhotos ? "Visa formen" : "Visa fotona",
                            systemImage: showsPhotos ? "square.grid.3x3" : "photo") {
@@ -170,6 +191,49 @@ struct RoomViewerView: View {
     /// den är det enda som ändrar sig av sig självt medan rummet står stilla.
     @ViewBuilder
     private var hint: some View {
+        if measuringCoverage {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Mäter täckningen…")
+            }
+            .bottomCaption()
+        } else if showsCoverage, let coverageReport {
+            coverageLegend(coverageReport)
+        } else {
+            bakeHint
+        }
+    }
+
+    /// Teckenförklaringen ÄR svaret på frågan, inte en not till den: talen säger
+    /// hur mycket som är kvar och färgerna var det sitter.
+    private func coverageLegend(_ report: SurfaceCoverage.Report) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 14) {
+                swatch(.solid, "Uppmätt", report.solidFraction)
+                swatch(.thin, "Ett håll", report.thinFraction)
+                swatch(.missing, "Saknas", report.missingFraction)
+            }
+            Text(report.missingFraction + report.thinFraction < 0.1
+                 ? "Rummet är väl täckt."
+                 : "Gå tillbaka till det gula och röda och filma därifrån — helst runt föremålen, inte förbi dem.")
+                .foregroundStyle(.secondary)
+        }
+        .bottomCaption()
+    }
+
+    private func swatch(_ level: SurfaceCoverage.Level,
+                        _ label: String,
+                        _ fraction: Double) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(Color(level))
+                .frame(width: 9, height: 9)
+            Text("\(label) \(Int((fraction * 100).rounded())) %")
+        }
+    }
+
+    @ViewBuilder
+    private var bakeHint: some View {
         switch queue.phase(for: room) {
         case .working(let message):
             HStack(spacing: 10) {
@@ -285,9 +349,59 @@ struct RoomViewerView: View {
     }
 
     private func showVariant() {
+        // `lit: false` betyder bara att scenen inte skriver över materialen —
+        // täckningsfärgerna måste överleva. De belyses ändå av scenens ljus, så
+        // att formen syns och man ser var i rummet det röda sitter.
+        if showsCoverage, let coverage {
+            controller.install(coverage, lit: false)
+            applyCamera()
+            return
+        }
         guard let variant = showsPhotos ? textured ?? plain : plain else { return }
         controller.install(variant, lit: variant === plain)
         applyCamera()
+    }
+
+    // MARK: - Täckning
+
+    /// Räknar fram täckningen en gång och visar den.
+    ///
+    /// Mätningen läser in alla djupkartor — ett par hundra på tiotals megabyte —
+    /// och projicerar varje hörn mot varje foto. Den görs därför på begäran och
+    /// utanför huvudtråden, och resultatet sparas så att knappen blir omedelbar
+    /// andra gången.
+    private func showCoverage() async {
+        if coverage != nil {
+            showsCoverage = true
+            showVariant()
+            return
+        }
+        guard let mesh = store.sceneMesh(for: room) else {
+            status = .plainOnly("Rummet saknar uppmätt yta, så täckningen går inte att visa.")
+            return
+        }
+        let keyframes = store.keyframes(for: room)
+        guard !keyframes.isEmpty else {
+            status = .plainOnly("Rummet saknar foton, så täckningen går inte att visa.")
+            return
+        }
+
+        let folder = store.directory(for: room)
+        measuringCoverage = true
+        let report = await Task.detached(priority: .userInitiated) {
+            let depth = DepthMaps(keyframes: keyframes, directory: folder)
+            return SurfaceCoverage.measure(mesh: mesh, keyframes: keyframes, depth: depth.lookup)
+        }.value
+        measuringCoverage = false
+
+        guard let entity = CoverageMeshEntity.make(from: mesh, report: report) else {
+            status = .plainOnly("Täckningen gick inte att rita.")
+            return
+        }
+        coverageReport = report
+        coverage = entity
+        showsCoverage = true
+        showVariant()
     }
 
     // MARK: - Gester

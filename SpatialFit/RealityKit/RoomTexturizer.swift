@@ -247,35 +247,6 @@ enum RoomTexturizer {
     }
 }
 
-/// Djupkartorna inlästa i minnet. 256×192 floats per keyframe – små nog att
-/// hålla allihop, vilket gör ocklusionstestet till en enkel uppslagning.
-private struct DepthMaps {
-
-    private let maps: [Int: [Float]]
-
-    init(keyframes: [Keyframe], directory: URL) {
-        var maps: [Int: [Float]] = [:]
-        for keyframe in keyframes where keyframe.depthSize.x > 0 {
-            guard let data = try? Data(contentsOf: directory.appending(path: keyframe.depthFilename)) else { continue }
-            let count = Int(keyframe.depthSize.x) * Int(keyframe.depthSize.y)
-            guard data.count >= count * MemoryLayout<Float>.size else { continue }
-            maps[keyframe.id] = data.withUnsafeBytes { raw in
-                Array(raw.bindMemory(to: Float.self).prefix(count))
-            }
-        }
-        self.maps = maps
-    }
-
-    var lookup: ViewSelection.DepthLookup {
-        let maps = self.maps
-        return { keyframe, index in
-            guard let map = maps[keyframe.id], index >= 0, index < map.count else { return nil }
-            let value = map[index]
-            return value.isFinite && value > 0 ? value : nil
-        }
-    }
-}
-
 private extension Array {
     /// Avbildar hela listan, eller ger `nil` så snart ett element saknas.
     func mapAllOrNil<T>(_ transform: (Element) -> T?) -> [T]? {

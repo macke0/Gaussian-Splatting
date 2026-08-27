@@ -56,6 +56,14 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
     private(set) var liveTriangleCount = 0
     @ObservationIgnored private var meshWatch: Timer?
 
+    /// Rummet uppifrån, färgat efter hur brett varje del setts. Ritas medan
+    /// kunden filmar — det är enda tillfället kartan kan ändra på något.
+    private(set) var coverageMap = LiveCoverage.Map.empty
+    /// Var kameran är och vart den pekar, så att kartan går att läsa som en
+    /// karta. Utan pricken vet man inte vilket håll man tittar åt på den.
+    private(set) var devicePosition = SIMD2<Float>.zero
+    private(set) var deviceHeading = SIMD2<Float>(0, -1)
+
     /// Vad sessionen faktiskt kör, inte vad vi bad om. Skillnaden är hela frågan:
     /// står rekonstruktionen på `av` har någon skrivit över vår konfiguration,
     /// står den på `mesh` utan att trianglarna växer är det avläsningen av
@@ -91,7 +99,7 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
 
         // Ordningen spelar mindre roll än den ser ut att göra: RoomPlan kör om
         // sessionen med sin egen konfiguration även efter det här. Det som
-        // räddar scenrekonstruktionen är omkörningen i `countTriangles()`.
+        // räddar scenrekonstruktionen är omkörningen i `pollSession()`.
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         arSession.run(Self.configuration())
 
@@ -101,16 +109,28 @@ final class RoomScanModel: NSObject, RoomCaptureViewDelegate {
         // Samma skäl här: sessionens delegat tillhör RoomPlan, så anchors
         // pollas i stället för att prenumereras på.
         meshWatch?.invalidate()
-        meshWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.countTriangles() }
+        // En halv sekund: kartan ändrar sig långsamt, men pricken som visar var
+        // man står ska följa med när man går, annars går den inte att navigera
+        // efter. Avläsningen är en genomgång av anchors och kostar ingenting.
+        meshWatch = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollSession() }
         }
     }
 
-    private func countTriangles() {
+    private func pollSession() {
         let frame = arSession.currentFrame
         let anchors = frame?.anchors ?? []
         let meshes = anchors.compactMap { $0 as? ARMeshAnchor }
         liveTriangleCount = meshes.reduce(0) { $0 + $1.geometry.faces.count }
+
+        coverageMap = recorder.coverage.map()
+        if let pose = frame?.camera.transform {
+            devicePosition = SIMD2(pose.columns.3.x, pose.columns.3.z)
+            // Kamerans blick är dess egna minus-Z. Uppifrån räknas bara planet,
+            // och pekar den rakt ned i golvet finns inget håll att rita.
+            let heading = SIMD2(-pose.columns.2.x, -pose.columns.2.z)
+            if simd_length(heading) > 0.01 { deviceHeading = simd_normalize(heading) }
+        }
 
         let running = (arSession.configuration as? ARWorldTrackingConfiguration)?.sceneReconstruction
         sessionState = "rekonstruktion \(Self.describe(running))"
