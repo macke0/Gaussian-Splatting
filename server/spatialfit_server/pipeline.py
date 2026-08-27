@@ -120,15 +120,19 @@ def _painting_views(bundle: "ScanBundle", directory: Path,
     from .poses import refined
     from .splat import synthetic_keyframes, train
 
-    # Gradientstyrd förtätning och COLMAP-poser hör ihop. Den lägger gaussare
-    # där bilden har kontrast, och med ARKits tolv millimeters posefel är hälften
-    # av den kontrasten inbillad — resultatet blir flygare. På lösta poser är den
-    # i stället det som gör bilden skarp, med hälften så många gaussare.
     posed = refined(bundle, directory)
     if posed is not None:
         bundle = posed
 
-    model = train(bundle, gradient_densification=posed is not None)
+    # Gradientstyrd förtätning slogs på här så fort COLMAP löste poserna, på
+    # hypotesen att den blir skarp när posefelet är borta. Den hypotesen är MÄTT
+    # OCH FALSK (``splat.GRADIENT_DENSIFICATION``): kant 0,63× mot MCMC:s 0,62×,
+    # korn 5,76× mot 5,13×. Värre, den har inget tak — MCMC håller antalet vid
+    # ``PHONE_SPLAT_BUDGET``, ``DefaultStrategy`` växer fritt. Telefonens rum blev
+    # 4,67 M gaussare i stället för 3 M, vilket jetsam-dödade appen och gjorde
+    # bilden kornigare än den modell som mättes. Bakningen ska träna med SAMMA
+    # strategi som ``train_splat.py``, annars mäter vi inte det vi levererar.
+    model = train(bundle)
     log.info("tränade %d gaussare", len(model))
     return synthetic_keyframes(model, bundle), model
 
