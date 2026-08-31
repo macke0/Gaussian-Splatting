@@ -99,6 +99,7 @@
 			packageProductDependencies = (
 				AAAAAAAAAAAAAAAAAAAA0031 /* MetalSplatter */,
 				AAAAAAAAAAAAAAAAAAAA0032 /* SplatIO */,
+				AAAAAAAAAAAAAAAAAAAA0034 /* spz */,
 			);
 			productName = SpatialFit;
 			productReference = AAAAAAAAAAAAAAAAAAAA0006 /* SpatialFit.app */;
@@ -157,6 +158,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AAAAAAAAAAAAAAAAAAAA0030 /* XCRemoteSwiftPackageReference "MetalSplatter" */,
+				AAAAAAAAAAAAAAAAAAAA0033 /* XCRemoteSwiftPackageReference "spz-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AAAAAAAAAAAAAAAAAAAA0003 /* Products */;
@@ -424,6 +426,14 @@
 				minimumVersion = 1.0.1;
 			};
 		};
+		AAAAAAAAAAAAAAAAAAAA0033 /* XCRemoteSwiftPackageReference "spz-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scier/spz-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -436,6 +446,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AAAAAAAAAAAAAAAAAAAA0030 /* XCRemoteSwiftPackageReference "MetalSplatter" */;
 			productName = SplatIO;
+		};
+		AAAAAAAAAAAAAAAAAAAA0034 /* spz */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AAAAAAAAAAAAAAAAAAAA0033 /* XCRemoteSwiftPackageReference "spz-swift" */;
+			productName = spz;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

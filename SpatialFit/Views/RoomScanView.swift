@@ -20,6 +20,10 @@ struct RoomScanView: View {
     @State private var scan = RoomScanModel()
     @State private var name = ""
     @State private var saveError: String?
+    /// Hur stor del av ytan fotona faktiskt täcker. Mäts här och inte först i
+    /// rumsvyn, för det här är sista stunden kunden står kvar i rummet och kan
+    /// fylla i det som fattas.
+    @State private var coverage: SurfaceCoverage.Report?
 
     var body: some View {
         NavigationStack {
@@ -58,6 +62,7 @@ struct RoomScanView: View {
             if let captureView = scan.captureView {
                 CaptureViewBridge(captureView: captureView)
                     .ignoresSafeArea(edges: .bottom)
+                    .overlay(alignment: .topTrailing) { liveCoverage }
                     .overlay(alignment: .bottom) { scanningHint }
             }
 
@@ -72,6 +77,33 @@ struct RoomScanView: View {
 
         case .finished(let captured, let niches):
             summary(captured: captured, niches: niches)
+        }
+    }
+
+    /// Kartan över vad kameran hunnit se, medan den fortfarande går att fylla i.
+    ///
+    /// Den kan inte visa rött: en yta som aldrig varit i bild har inga
+    /// djuppunkter och syns som tomrum, inte som fel. Det tomma är därför lika
+    /// viktigt att läsa som det gula, och texten säger det rakt ut.
+    @ViewBuilder
+    private var liveCoverage: some View {
+        if !scan.coverageMap.tiles.isEmpty {
+            VStack(alignment: .trailing, spacing: 6) {
+                CoverageMapView(map: scan.coverageMap,
+                                position: scan.devicePosition,
+                                heading: scan.deviceHeading)
+                    .frame(width: 130, height: 130)
+
+                Text("\(Int((scan.coverageMap.solidFraction * 100).rounded())) % från flera håll")
+                    .font(.caption2)
+                Text("Gult = bara ett håll. Tomt = aldrig filmat.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding(.trailing, 16)
+            .padding(.top, 8)
         }
     }
 
@@ -123,6 +155,8 @@ struct RoomScanView: View {
                                    : "\(scan.sceneMesh.triangleCount) trianglar")
             }
 
+            coverageSection
+
             if let saveError {
                 Section {
                     Text(saveError)
@@ -135,6 +169,51 @@ struct RoomScanView: View {
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
+        .task { await measureCoverage() }
+    }
+
+    /// Vad fotona täcker, medan kunden fortfarande kan göra något åt det.
+    ///
+    /// En yta som bara setts från ett håll ser bra ut från just det hållet och
+    /// faller isär när man vrider sig i det färdiga rummet. Det går inte att
+    /// laga i efterhand — därför står talet här och inte bara i rumsvyn.
+    @ViewBuilder
+    private var coverageSection: some View {
+        if !scan.sceneMesh.isEmpty && !scan.keyframes.isEmpty {
+            Section("Fotograferad yta") {
+                if let coverage {
+                    LabeledContent("Uppmätt från flera håll",
+                                   value: percent(coverage.solidFraction))
+                    LabeledContent("Bara från ett håll", value: percent(coverage.thinFraction))
+                    LabeledContent("Inget foto ser ytan", value: percent(coverage.missingFraction))
+                    if coverage.thinFraction + coverage.missingFraction >= 0.1 {
+                        Text("Skanna om de delarna innan du lämnar rummet. Gå runt möblerna i stället för förbi dem — en yta som bara setts från ett håll går inte att återge från något annat.")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                } else {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Mäter täckningen…")
+                    }
+                }
+            }
+        }
+    }
+
+    private func percent(_ fraction: Double) -> String {
+        "\(Int((fraction * 100).rounded())) %"
+    }
+
+    private func measureCoverage() async {
+        guard coverage == nil, !scan.sceneMesh.isEmpty, !scan.keyframes.isEmpty else { return }
+        let mesh = scan.sceneMesh
+        let keyframes = scan.keyframes
+        let folder = scan.photoDirectory
+        coverage = await Task.detached(priority: .userInitiated) {
+            let depth = DepthMaps(keyframes: keyframes, directory: folder)
+            return SurfaceCoverage.measure(mesh: mesh, keyframes: keyframes, depth: depth.lookup)
+        }.value
     }
 
     private func save(_ captured: CapturedRoom) {

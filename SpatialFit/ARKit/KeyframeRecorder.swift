@@ -26,6 +26,11 @@ final class KeyframeRecorder {
 
     private(set) var keyframes: [Keyframe] = []
 
+    /// Täckningen som byggts ur de sparade bildernas djupkartor. Byggs här och
+    /// inte i modellen ovanför för att djupet redan är uppackat på det här
+    /// stället — annars skulle kartan läsa tillbaka filerna vi just skrev.
+    private(set) var coverage = LiveCoverage()
+
     private let directory: URL
     private let maximumCount: Int
     /// Bredd i pixlar på den sparade bilden. Ska följa atlasens upplösning:
@@ -180,14 +185,16 @@ final class KeyframeRecorder {
         let imageURL = directory.appending(path: "kf\(id).jpg")
         guard (try? rendered.jpeg.write(to: imageURL)) != nil else { return }
 
-        let depthSize = writeDepth(frame, id: id)
+        let depth = writeDepth(frame, id: id)
         recordedSharpness.append(rendered.sharpness)
 
-        keyframes.append(Keyframe(id: id,
-                                  worldFromCamera: frame.camera.transform,
-                                  intrinsics: scaledIntrinsics(frame.camera.intrinsics, by: rendered.scale),
-                                  imageSize: SIMD2(Float(rendered.size.width), Float(rendered.size.height)),
-                                  depthSize: depthSize))
+        let keyframe = Keyframe(id: id,
+                                worldFromCamera: frame.camera.transform,
+                                intrinsics: scaledIntrinsics(frame.camera.intrinsics, by: rendered.scale),
+                                imageSize: SIMD2(Float(rendered.size.width), Float(rendered.size.height)),
+                                depthSize: depth.size)
+        keyframes.append(keyframe)
+        coverage.add(keyframe, depth: depth.values)
     }
 
     /// Medelskillnaden mellan grannpixlar i en gråskalekopia. Rörelseoskärpa
@@ -233,9 +240,13 @@ final class KeyframeRecorder {
 
     /// LiDAR-djupet, rått Float32. Utan det går ocklusion inte att avgöra och
     /// väggen bakom en spis målas ut över spisen.
-    private func writeDepth(_ frame: ARFrame, id: Int) -> SIMD2<Int32> {
+    ///
+    /// Värdena lämnas tillbaka och inte bara storleken, för täckningskartan
+    /// behöver dem med en gång och de är redan uppackade här.
+    private func writeDepth(_ frame: ARFrame, id: Int) -> (size: SIMD2<Int32>, values: [Float]) {
+        let nothing = (size: SIMD2<Int32>(0, 0), values: [Float]())
         guard let map = frame.sceneDepth?.depthMap ?? frame.smoothedSceneDepth?.depthMap else {
-            return SIMD2(0, 0)
+            return nothing
         }
 
         CVPixelBufferLockBaseAddress(map, .readOnly)
@@ -243,18 +254,23 @@ final class KeyframeRecorder {
 
         let width = CVPixelBufferGetWidth(map)
         let height = CVPixelBufferGetHeight(map)
-        guard let base = CVPixelBufferGetBaseAddress(map) else { return SIMD2(0, 0) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nothing }
         let bytesPerRow = CVPixelBufferGetBytesPerRow(map)
 
-        var data = Data(capacity: width * height * MemoryLayout<Float>.size)
-        for row in 0..<height {
-            data.append(Data(bytes: base.advanced(by: row * bytesPerRow),
-                             count: width * MemoryLayout<Float>.size))
+        // Raderna kopieras var för sig: `bytesPerRow` är ofta bredare än bilden.
+        var values = [Float](repeating: 0, count: width * height)
+        values.withUnsafeMutableBytes { destination in
+            for row in 0..<height {
+                let length = width * MemoryLayout<Float>.size
+                destination.baseAddress?.advanced(by: row * length)
+                    .copyMemory(from: base.advanced(by: row * bytesPerRow), byteCount: length)
+            }
         }
 
+        let data = values.withUnsafeBytes { Data($0) }
         guard (try? data.write(to: directory.appending(path: "kf\(id).depth"))) != nil else {
-            return SIMD2(0, 0)
+            return nothing
         }
-        return SIMD2(Int32(width), Int32(height))
+        return (SIMD2(Int32(width), Int32(height)), values)
     }
 }

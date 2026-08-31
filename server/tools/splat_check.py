@@ -16,9 +16,11 @@ Tre tal per modell:
 
 Poserna kommer från ARKit, inte från träningens justerade — PLY-formatet bär
 inte kamerorna. Det gör alla tal en aning pessimistiska, men lika mycket för
-alla modeller, så jämförelsen håller.
+alla modeller, så jämförelsen håller. Ska ett ENSKILT tal betyda något, eller
+jämförelsebilden läsas med ögat, räcker det inte: kör med ``--forfinade``.
 
-    python tools/splat_check.py <skanningsmapp> <modell.ply> [<modell.ply> ...]
+    python tools/splat_check.py [--forfinade <arbetsyta>] <skanningsmapp> \
+        <modell.ply> [<modell.ply> ...]
 """
 import sys
 from pathlib import Path
@@ -30,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from spatialfit_server.bundle import (ScanBundle, connected_surface,  # noqa: E402
                                       measured_points)
 from spatialfit_server.splat import (MAXIMUM_DRIFT, SH_DC,  # noqa: E402
-                                     _SPZ_COLOR_SCALE, SplatModel,
+                                     _SPZ_COLOR_SCALE, _SPZ_SH_FLIP, SplatModel,
                                      synthetic_keyframes)
 
 HOLDOUT = 10
@@ -53,12 +55,22 @@ def read_ply(path: Path) -> SplatModel:
 
     column = {name: index for index, name in enumerate(names)}
     take = lambda *keys: table[:, [column[key] for key in keys]]  # noqa: E731
+    # Utan de högre graderna vore en SH-tränad modell platt när den mäts, och
+    # varje tal ur den skulle underskatta den. Formatet lagrar dem kanalvis.
+    rest = sum(name.startswith("f_rest_") for name in names) // 3
+    if rest:
+        base = take("f_dc_0", "f_dc_1", "f_dc_2")
+        higher = take(*(f"f_rest_{index}" for index in range(rest * 3)))
+        colors = np.concatenate(
+            [base[:, None], higher.reshape(count, 3, rest).transpose(0, 2, 1)], axis=1)
+    else:
+        colors = take("f_dc_0", "f_dc_1", "f_dc_2") * SH_DC + 0.5
     return SplatModel(
         means=take("x", "y", "z"),
         quats=take("rot_0", "rot_1", "rot_2", "rot_3"),
         scales=take("scale_0", "scale_1", "scale_2"),
         opacities=table[:, column["opacity"]],
-        colors=take("f_dc_0", "f_dc_1", "f_dc_2") * SH_DC + 0.5)
+        colors=colors)
 
 
 def read_spz(path: Path) -> SplatModel:
@@ -73,7 +85,8 @@ def read_spz(path: Path) -> SplatModel:
     import struct
 
     blob = gzip.decompress(path.read_bytes())
-    magic, version, count, _, fractional, _, _ = struct.unpack_from("<IIIBBBB", blob)
+    magic, version, count, degree, fractional, _, _ = struct.unpack_from(
+        "<IIIBBBB", blob)
     assert magic == 0x5053474E and version == 3, (magic, version)
 
     at = 16
@@ -83,8 +96,9 @@ def read_spz(path: Path) -> SplatModel:
         at += count * width
         return chunk.reshape(count, width)
 
-    positions, alphas, colors, scales, rotations = (
-        eat(9), eat(1), eat(3), eat(3), eat(4))
+    bands = (degree + 1) ** 2 - 1
+    positions, alphas, colors, scales, rotations, harmonics = (
+        eat(9), eat(1), eat(3), eat(3), eat(4), eat(bands * 3))
 
     # Tre byte per led, litet ändvänt, och teckenbiten sitter i bit 23 — så
     # talet måste tecken-utvidgas för hand innan det blir ett avstånd.
@@ -120,12 +134,26 @@ def read_spz(path: Path) -> SplatModel:
     flip = np.array([1.0, -1.0, -1.0])
     alpha = (alphas[:, 0] / 255).clip(1 / 255, 254 / 255)
     single = lambda values: np.ascontiguousarray(values, np.float32)  # noqa: E731
+
+    # ``_SPZ_COLOR_SCALE`` vänder tillbaka till den RÅA SH-nolltermen — inte
+    # till färgen. Skillnaden är en faktor 3,54, och delar man med ``SH_DC`` en
+    # gång för mycket blir det en kontraststräckning kring grått som blåser ut
+    # varje dager och kväver varje skugga. Med band vill både ``write_ply`` och
+    # rasteraren ha den råa termen; utan band ska den räknas om till färg.
+    base = (colors / 255 - 0.5) / _SPZ_COLOR_SCALE
+    if bands:
+        higher = ((harmonics.reshape(count, bands, 3).astype(np.float64) - 128)
+                  / 128 * _SPZ_SH_FLIP[:bands, None])
+        color = np.concatenate([base[:, None], higher], axis=1)
+    else:
+        color = base * SH_DC + 0.5
+
     return SplatModel(
         means=single(means * flip),
         quats=single(quats[:, [3, 0, 1, 2]] * [1.0, *flip]),
         scales=single(scales / 16 - 10),
         opacities=single(np.log(alpha / (1 - alpha))),
-        colors=single((colors / 255 - 0.5) / _SPZ_COLOR_SCALE * SH_DC + 0.5))
+        colors=single(color))
 
 
 def edge_strength(image: np.ndarray) -> float:
@@ -136,8 +164,27 @@ def edge_strength(image: np.ndarray) -> float:
 
 
 def main() -> None:
-    room = Path(sys.argv[1])
+    arguments = sys.argv[1:]
+    workspace = None
+    if "--forfinade" in arguments:
+        at = arguments.index("--forfinade")
+        workspace = Path(arguments[at + 1])
+        del arguments[at:at + 2]
+
+    room = Path(arguments[0])
     bundle = ScanBundle.load(room)
+
+    # ARKits poser är INTE de modellen tränades i. Skillnaden är stor nog att
+    # ensam förklara en smetig rendering — mätt en gång som "modellen klarar
+    # inte närhåll", vilket var kamerorna inne i väggen och inte modellen. Med
+    # ``--forfinade`` körs samma COLMAP-steg som bakningen och arbetsytan blir
+    # kvar, så nästa mätning slipper de tio minuterna.
+    if workspace is not None:
+        from spatialfit_server import poses
+        refined = poses.refined(bundle, room, workspace)
+        if refined is None:
+            raise SystemExit("COLMAP gav inga poser att lita på")
+        bundle = refined
     # Samma yta som träningen klämmer mot, alltså meshen plus djupkartorna. Mot
     # bara meshen skulle varje gaussare som lagligt sitter på en gardin räknas
     # som dimma, och måttet mäta något annat än det spärren gör.
@@ -152,7 +199,7 @@ def main() -> None:
     print(f"{len(bundle.keyframes)} foton, mäter mot {len(held_out)} av dem\n")
     print(f"{'modell':<24} {'gaussare':>9} {'L1':>7} {'skärpa':>7} {'dimma':>7}")
 
-    for argument in sys.argv[2:]:
+    for argument in arguments[1:]:
         path = Path(argument)
         model = read_spz(path) if path.suffix == ".spz" else read_ply(path)
 

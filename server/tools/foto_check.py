@@ -1,14 +1,5 @@
 """Mäter hur skarpa SKANNINGENS EGNA FOTON är, innan något tränas.
 
-MÅTTET NEDAN ÄR TRASIGT — LITA INTE PÅ TALEN. `energy` summerar ``mean|∇I|``,
-och för en monoton kant BEVARAS den summan under suddning: gradienten blir lägre
-men bredare, och arean under den är densamma. Kvoten mäter alltså hur mycket
-HÖGFREKVENT BRUS bilden har, inte hur suddig den är. Talen verktyget gav
-(p90/p10 1,21×) friskrev därför INTE fotona från rörelseoskärpa, vilket är precis
-den slutsats som drogs ur dem en gång. Gör om med varians av Laplacian eller med
-uppmätt kantbredd innan rörelseoskärpa avfärdas igen. Ligger kvar därför att
-frågan är riktig och insamlingen fortfarande är omätt.
-
 Varje mått vi har jämför renderingen med ett foto och antar därmed tyst att
 fotot är skarpt. Det är inte självklart. ARKits keyframes är videobildrutor
 tagna medan kunden GÅR genom rummet, inte stillbilder: rullande slutare,
@@ -17,67 +8,116 @@ kan ingen modell bli skarpare än snittet, för träningen ser alla foton som li
 sanna. Då sitter felet i insamlingen och inte en enda konstant i träningen kan
 laga det.
 
-Skärpan mäts innehållsokänsligt. Kantenergi ensam duger inte — en bild på en tom
-vägg har lite kantenergi hur skarp den än är. I stället jämförs fotot med sig
-självt suddat: ett skarpt foto TAPPAR mycket på att suddas, ett redan suddigt
-tappar lite. Kvoten säger alltså hur mycket skärpa som finns att förlora.
+Måttet är Crete-Roffets referensfria oskärpemått. Bilden suddas med en känd
+kärna och man mäter hur mycket grannskillnaderna FÖRÄNDRAS: en redan suddig bild
+ändras nästan inte, en skarp bild ändras mycket. Talet ligger i [0, 1] där högre
+är suddigare.
 
-    python tools/foto_check.py <skanningsmapp>
+Det ersätter ett tidigare mått som summerade ``mean|gradient|`` och som var
+odugligt: för en monoton kant BEVARAS den summan under suddning — gradienten
+blir lägre men bredare och arean densamma. Det gamla talet mätte alltså mängden
+HÖGFREKVENT BRUS, och friskrev en gång fotona från rörelseoskärpa på den grunden.
+Crete-Roffet är dessutom kontrastoberoende, och det är hela poängen: talen ska gå
+att jämföra mellan vår skanning och ett främmande referensdataset som
+fotograferats med annan kamera, annan optik och annan exponering.
 
-Läs talet så här: ligger fotona tätt är de lika bra och urval hjälper inte.
-Är spridningen stor finns det skarpa foton att välja, och de suddiga drar ned
-alla andra — precis som varje seriös fotogrammetripipeline sorterar bort dem.
+    python tools/foto_check.py <skanningsmapp eller mapp med bilder> [--bredd N]
+
+``--bredd`` skalar varje bild till N pixlars bredd före mätningen och är
+NÖDVÄNDIG när två dataset jämförs. Kärnan är fast på nio pixlar, så samma motiv
+i högre upplösning får ett lägre tal utan att vara skarpare. Utan flaggan mäter
+man upplösningsskillnaden och tror att man mätt oskärpa.
+
+Talet är kalibrerat mot känd gaussisk suddning av ett av våra egna foton, så
+skillnader går att läsa som pixlar i stället för som en enhetslös kvot:
+
+    ===== =======
+    sigma oskärpa
+    ===== =======
+    0     0,313
+    0,5   0,351
+    1     0,453
+    2     0,670
+    3     0,808
+    5     0,927
+    ===== =======
+
+Ett foto som ligger på 0,45 är alltså ungefär en pixel suddigare än ett på 0,31.
+Gör om tabellen om ``bundle.BLUR_SPAN`` ändras.
+
+Läs talet så här: ligger fotona tätt är de lika bra och urval hjälper inte. Är
+spridningen stor finns det skarpa foton att välja, och de suddiga drar ned alla
+andra — precis som varje seriös fotogrammetripipeline sorterar bort dem. Och är
+MEDIANEN mycket högre än referensdatasetets är det filmningen som binder, hur
+mycket vi än skruvar på träningen.
 """
 import sys
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from spatialfit_server.bundle import ScanBundle  # noqa: E402
+# Måttet bor i paketet, för träningen viktar fotona med det numera. Två kopior
+# av den här matematiken är två chanser att bara den ena rättas.
+from spatialfit_server.bundle import blur as _blur  # noqa: E402
+
+#: Så många bilder mäts, jämnt spridda över mappen. Fördelningen behöver inte
+#: fler, och referensdataseten har tusentals bilder i full upplösning.
+SAMPLES = 60
 
 
-def _sharpness(image: np.ndarray) -> float:
-    """Kantenergi delat med samma bilds kantenergi efter en lätt suddning."""
-    grey = np.asarray(image, np.float32).mean(axis=2)
-    # Tre pixlars glidande medel i båda led. Litet med flit: det ska likna den
-    # oskärpa en hand ger på en tjugondels sekund, inte sudda sönder bilden.
-    padded = np.pad(grey, 1, mode="edge")
-    blurred = sum(padded[row:row + grey.shape[0], column:column + grey.shape[1]]
-                  for row in range(3) for column in range(3)) / 9.0
-
-    def energy(picture: np.ndarray) -> float:
-        return float(np.abs(np.diff(picture, axis=0)).mean()
-                     + np.abs(np.diff(picture, axis=1)).mean())
-
-    return energy(grey) / max(energy(blurred), 1e-6)
+def _images(where: Path) -> list[Path]:
+    """Både våra skanningar och ett främmande dataset ska gå att peka på."""
+    if (where / "keyframes.json").exists():
+        return sorted(where.glob("kf*.jpg"), key=lambda path: int(path.stem[2:]))
+    return sorted(path for path in where.rglob("*")
+                  if path.suffix.lower() in {".jpg", ".jpeg", ".png"})
 
 
 def main(argv: list[str] | None = None) -> int:
-    arguments = (argv if argv is not None else sys.argv[1:])
+    arguments = argv if argv is not None else sys.argv[1:]
     if not arguments:
-        print(__doc__.strip().splitlines()[-4], file=sys.stderr)
+        print("python tools/foto_check.py <mapp>", file=sys.stderr)
         return 2
 
-    bundle = ScanBundle.load(Path(arguments[0]))
-    scores = np.array([_sharpness(frame.image) for frame in bundle.keyframes])
-    order = np.argsort(scores)
+    where = Path(arguments[0])
+    width = int(arguments[arguments.index("--bredd") + 1]) \
+        if "--bredd" in arguments else 0
 
-    print(f"{len(scores)} foton")
-    for label, value in (("sämsta", scores[order[0]]),
-                         ("p10", np.percentile(scores, 10)),
-                         ("median", np.median(scores)),
-                         ("p90", np.percentile(scores, 90)),
-                         ("bästa", scores[order[-1]])):
-        print(f"  {label:<7} {value:.3f}")
-    print(f"  bästa/sämsta {scores[order[-1]] / scores[order[0]]:.2f}x, "
-          f"p90/p10 {np.percentile(scores, 90) / np.percentile(scores, 10):.2f}x")
+    paths = _images(where)
+    if not paths:
+        print(f"inga bilder i {where}", file=sys.stderr)
+        return 1
 
-    # Vilka foton som är dåliga spelar roll: ligger de suddiga utspridda över
-    # hela varvet kan de plockas bort utan att något hål uppstår.
-    worst = [bundle.keyframes[index].id for index in order[:12]]
-    print(f"  suddigaste tolv: {sorted(worst)}")
+    sample = paths[::max(1, len(paths) // SAMPLES)]
+    values, measured = [], None
+    for path in sample:
+        picture = Image.open(path).convert("L")
+        if width:
+            picture = picture.resize(
+                (width, round(picture.height * width / picture.width)),
+                Image.LANCZOS)
+        measured = picture.size
+        values.append(_blur(np.asarray(picture, dtype=np.float64) / 255.0))
+    values = np.array(values)
+    order = np.argsort(values)
+
+    print(f"{where}")
+    # Den MÄTTA storleken, inte filens: skalas bilderna om är det den som gäller,
+    # och en jämförelse mellan två dataset står och faller med att den är lika.
+    print(f"  {len(sample)} av {len(paths)} bilder, mätta vid {measured}"
+          f" (filen {Image.open(sample[0]).size})")
+    for label, value in (("skarpaste", values[order[0]]),
+                         ("p10", np.percentile(values, 10)),
+                         ("median", np.median(values)),
+                         ("p90", np.percentile(values, 90)),
+                         ("suddigaste", values[order[-1]])):
+        print(f"  {label:<11} {value:.3f}")
+    print(f"  suddigaste tolv: "
+          f"{sorted(sample[index].name for index in order[-12:])}")
+    print("  (0 = knivskarpt, 1 = helt sudd; jämför dataset med MEDIANEN)")
     return 0
 
 

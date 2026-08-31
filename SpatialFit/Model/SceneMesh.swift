@@ -30,6 +30,34 @@ struct SceneMesh: Sendable, Equatable {
     var isEmpty: Bool { indices.count < 3 }
     var triangleCount: Int { indices.count / 3 }
 
+    /// En normal per hörn, ytviktad.
+    ///
+    /// ARKit ger bara hörn och trianglar. Utan normaler blir mesh:en svart i
+    /// RealityKit, och med bara triangelnormaler blir en rundad form fasetterad.
+    /// Kryssprodukten är dubbla triangelarean, så stora trianglar väger tyngre
+    /// av sig själva.
+    ///
+    /// Ligger här och inte i ritlagret för att också täckningsmätningen behöver
+    /// dem: om en yta är fotograferad eller bara skymtad avgörs av vinkeln
+    /// mellan normalen och siktlinjen.
+    func vertexNormals() -> [SIMD3<Float>] {
+        var normals = [SIMD3<Float>](repeating: .zero, count: positions.count)
+        for triangle in stride(from: 0, to: indices.count - 2, by: 3) {
+            let a = Int(indices[triangle])
+            let b = Int(indices[triangle + 1])
+            let c = Int(indices[triangle + 2])
+            let face = simd_cross(positions[b] - positions[a],
+                                  positions[c] - positions[a])
+            normals[a] += face
+            normals[b] += face
+            normals[c] += face
+        }
+        return normals.map { normal in
+            let length = simd_length(normal)
+            return length > 0 ? normal / length : SIMD3(0, 1, 0)
+        }
+    }
+
     // MARK: - På disk
 
     private static let magic: [UInt8] = Array("SFMESH01".utf8)

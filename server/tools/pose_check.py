@@ -26,25 +26,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from spatialfit_server.bundle import ScanBundle  # noqa: E402
-
-
-def _umeyama(source: np.ndarray, target: np.ndarray):
-    """Likformig passning source → target: rotation, skala, förflyttning.
-
-    Skalan måste vara med. COLMAP vet inte hur stort rummet är — bara hur det
-    ser ut — så en rekonstruktion som är perfekt men halva storleken skulle
-    annars mäta som helt fel.
-    """
-    source_mean, target_mean = source.mean(0), target.mean(0)
-    a, b = source - source_mean, target - target_mean
-    u, singular, vt = np.linalg.svd(a.T @ b / len(a))
-    correction = np.eye(3)
-    # Speglingen måste stängas ute: en spegelvänd lösning kan passa punkterna
-    # lika bra i minsta kvadrat men är inte en stelkroppsrörelse.
-    correction[2, 2] = np.sign(np.linalg.det(u @ vt))
-    rotation = (u @ correction @ vt).T
-    scale = float(singular @ np.diag(correction) / a.var(0).sum())
-    return rotation, scale, target_mean - scale * rotation @ source_mean
+# Passningen bor i paketet, för bakningen gör samma sak numera. Två kopior av
+# den här matematiken är två chanser att bara den ena rättas.
+from spatialfit_server.poses import umeyama as _umeyama  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

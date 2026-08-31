@@ -25,20 +25,52 @@ struct SplatRoomView: UIViewRepresentable {
     let standingAt: SIMD3<Float>?
     /// Främmande fil: visa den precis som den är skriven.
     ///
-    /// Två saker gäller bara våra egna filer. `matchingTraining` kompenserar för
-    /// vilket färgrum VÅR träning blandade i, och `reach` håller kameran inne i
-    /// rummet för att splatten bara sett det inifrån. En fil från någon annan
-    /// tränare kan ha blandat i linjärt rum och kan vara ett föremål man ska gå
-    /// runt — då är båda hjälperna skada, inte hjälp.
+    /// Säger var filen KOMMER IFRÅN, inte hur man tittar på den. Vår tränare
+    /// blandar i sRGB och skriver ARKits värld med Y uppåt; en vanlig 3DGS-fil
+    /// kommer ur COLMAP, blandar linjärt och står upp och ner. Flaggan styr
+    /// därför tre saker som alla följer ursprunget: `matchingTraining`,
+    /// målets färgrum, uppvektorn — och percentilramen, som bara behövs när
+    /// COLMAP strött enstaka gaussare hundratals meter bort.
     ///
-    /// Flaggan finns för att kunna avgöra en enda fråga: renderar vi en känd god
-    /// fil skarpt? Gör vi det ligger suddigheten i vår indata och inte i Metal.
+    /// Den finns för att kunna avgöra en enda fråga: renderar vi en känd god fil
+    /// skarpt? Gör vi det ligger suddigheten i vår indata och inte i Metal.
     var asAuthored = false
+    /// Kretsa fritt kring rummet i stället för att gå i det, även rakt igenom
+    /// väggar och möbler.
+    ///
+    /// Normalt står kameran inne i rummet och stoppas `margin` från närmaste
+    /// föremål, se `clearance` — en splat sedd inifrån en soffa är ett taggigt
+    /// mörker och inget kunden ska kunna hamna i. Men när vyn används för att
+    /// GRANSKA en träningskörning är just baksidorna det man vill se, och då
+    /// väger fri rörelse tyngre.
+    var roaming = false
+    /// Den uppmätta ytan att lägga under splatten, se `BackdropRenderer`.
+    ///
+    /// Utan den är ett hål i splatten genomsikt rakt ut ur rummet. Med den är
+    /// hålet en solid yta som ligger sju millimeter från där splatten skulle ha
+    /// legat — oskarpare, men på rätt plats. Det är den som gör att kameran kan
+    /// släppas fri utan att rummet ser sönderfallet ut.
+    var backdrop: TexturedMesh?
+    /// Den bakade atlasen. Saknas den ritas ytan enfärgad.
+    var backdropTextureURL: URL?
+    /// Vilka lager som ritas. Finns för att kunna se vem av dem som är suddig:
+    /// är splatten skarp ensam men rummet smetigt tillsammans ligger felet i
+    /// hopfogningen, är den suddig redan ensam ligger det i modellen.
+    var layers: Layers = .both
     @Binding var yaw: Float
     @Binding var pitch: Float
     @Binding var distance: Float
-    /// Antalet gaussare när de är inne, eller felet som stoppade det.
-    let onLoad: @MainActor (Result<Int, Error>) -> Void
+    /// Vad som kom in, eller felet som stoppade det.
+    let onLoad: @MainActor (Result<Loaded, Error>) -> Void
+
+    /// Splatten som den låg på disk.
+    struct Loaded: Sendable {
+        let count: Int
+        /// SH-graden filen bär. **Noll betyder att rummet är bakat innan
+        /// servern började skriva banden** — då är färgen en rest utan glas,
+        /// lack eller släpljus, och rummet måste bakas om för att bli skarpt.
+        let shDegree: Int
+    }
 
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
@@ -55,16 +87,36 @@ struct SplatRoomView: UIViewRepresentable {
         view.delegate = context.coordinator
 
         context.coordinator.start(in: view, url: url, standingAt: standingAt,
-                                  asAuthored: asAuthored, onLoad: onLoad)
+                                  asAuthored: asAuthored, roaming: roaming,
+                                  backdrop: backdrop, backdropTextureURL: backdropTextureURL,
+                                  onLoad: onLoad)
         return view
     }
 
     func updateUIView(_ view: MTKView, context: Context) {
         context.coordinator.setCamera(yaw: yaw, pitch: pitch, distance: distance)
+        context.coordinator.setLayers(layers)
     }
 
     func makeCoordinator() -> SplatSceneCoordinator {
         SplatSceneCoordinator()
+    }
+
+    /// Splatten, den uppmätta ytan, eller båda.
+    enum Layers: String, CaseIterable, Identifiable, Sendable {
+        case splats
+        case mesh
+        case both
+
+        var id: Self { self }
+
+        var label: String {
+            switch self {
+            case .splats: "Bara splats"
+            case .mesh: "Bara yta"
+            case .both: "Båda"
+            }
+        }
     }
 }
 
@@ -91,17 +143,50 @@ private let chunkSize = 50_000
 ///
 /// Filen på disk rörs inte: den är en vanlig 3DGS-fil och ska gå att öppna i
 /// vilken annan visare som helst.
+///
+/// **De högre SH-banden MÅSTE följa med.** Den första versionen läste
+/// `point.color.asSRGBFloat` — som bara är nolltermen, `0,5 + SH_C0·sh[0]` —
+/// och skrev tillbaka EN koefficient. Då blev varje gaussare grad 0, och
+/// `SplatChunk` läser graden ur första punkten, så shadern tog sin
+/// `SHDegree0`-snabbväg och banden nådde aldrig GPU:n. Det är precis samma fel
+/// som `write_spz` hade på servern: optimeraren LÄGGER glas, lack och släpljus
+/// i banden, så nolltermen är en rest som aldrig var tänkt att stå ensam.
+/// Uppmätt på samma modell är skillnaden mellan full SH och bara nollterm
+/// L1 19,16 — sot i taket, dis på väggarna, en parkett utan värme.
 private func matchingTraining(_ points: [SplatPoint]) -> [SplatPoint] {
     points.map { point in
         var point = point
-        let color = point.color.asSRGBFloat
-        let compensated = SIMD3(pow(color.x, 1 / 2.2),
-                                pow(color.y, 1 / 2.2),
-                                pow(color.z, 1 / 2.2))
-        point.color = .sphericalHarmonicFloat(
-            [(compensated - 0.5) * SplatPoint.Color.INV_SH_C0])
+        let bands = point.color.asSphericalHarmonicFloat
+        // Shaderns egen nollterm, utan `asSRGBFloat`s övre klipp — den kapar
+        // högdagrarna innan gammat ens hunnit räknas.
+        let base = simd_max(SplatPoint.Color.SH_C0 * bands[0] + 0.5, .zero)
+        let compensated = SIMD3(pow(base.x, 1 / 2.2),
+                                pow(base.y, 1 / 2.2),
+                                pow(base.z, 1 / 2.2))
+        var corrected = [(compensated - 0.5) * SplatPoint.Color.INV_SH_C0]
+
+        if bands.count > 1 {
+            // Banden är avvikelser KRING nolltermen, och `pow(1/2.2)` trycker
+            // ihop skalan olika mycket beroende på hur ljust det är. Rätt
+            // storlek i det ihoptryckta rummet är därför derivatan gånger den
+            // gamla — kedjeregeln, exakt så länge avvikelsen är liten, vilket
+            // den är. Utan skalningen blir riktningsberoendet överdrivet i
+            // skuggorna och för svagt i dagrarna.
+            let slope = SIMD3(gammaSlope(base.x), gammaSlope(base.y), gammaSlope(base.z))
+            for band in bands.dropFirst() { corrected.append(band * slope) }
+        }
+        point.color = .sphericalHarmonicFloat(corrected)
         return point
     }
+}
+
+/// Derivatan av `c^(1/2.2)`, med ett golv på färgen.
+///
+/// Lutningen växer utan gräns mot svart — vid noll är den oändlig — och
+/// linjäriseringen gäller ändå inte där. Två procent ljus kapar den vid knappt
+/// fyra, vilket är så mycket riktningsberoende ett nästan svart område kan bära.
+private func gammaSlope(_ color: Float) -> Float {
+    (1 / 2.2) * pow(max(color, 0.02), 1 / 2.2 - 1)
 }
 
 /// Lådan punkterna ligger i, eventuellt med ytterkanterna bortklippta.
@@ -136,23 +221,65 @@ private func bounds(of points: [SplatPoint],
     return (low, high)
 }
 
+/// Kantlängden på beläggningskartans kuber.
+///
+/// Grovt med flit. Kartan ska svara på "är det något här", inte beskriva formen,
+/// och femton centimeter är mindre än marginalen kameran ändå hålls på avstånd.
+private let cellSize: Float = 0.15
+
+/// Hur ogenomskinlig en gaussare måste vara för att räknas som ett föremål.
+/// De genomskinliga är dis, gardiner och glas — kameran ska få gå fram till ett
+/// fönster utan att stoppas av rutan.
+private let solidEnough: Float = 0.3
+
+/// Kuben en punkt ligger i, packad i ett tal.
+///
+/// Tjugoen bitar per led räcker för ±150 km, och rummet är åtta meter.
+private func cell(containing point: SIMD3<Float>) -> Int64 {
+    let index = SIMD3<Int64>(floor(point / cellSize)) &+ SIMD3<Int64>(repeating: 1 << 20)
+    return index.x << 42 | index.y << 21 | index.z
+}
+
+/// Kuberna de här gaussarna fyller.
+///
+/// Räknas utanför huvudtråden: ett par miljoner punkter hashade där hade synts
+/// som hack precis medan man tittar på rummet växa fram.
+private func occupancy(of points: [SplatPoint]) -> Set<Int64> {
+    var cells = Set<Int64>()
+    for point in points where point.opacity.asLinearFloat >= solidEnough {
+        cells.insert(cell(containing: point.position))
+    }
+    return cells
+}
+
 /// Håller renderaren och kameran. `MTKView` ritar om av sig själv, så det här är
 /// bara en brevlåda: kamerans läge in, en bild ut.
 @MainActor
 final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
 
     private var renderer: SplatRenderer?
+    /// Den uppmätta ytan under splatten. `nil` när rummet saknar mesh eller
+    /// enheten inte kunde bygga rörledningarna.
+    private var backdrop: BackdropRenderer?
     private var queue: MTLCommandQueue?
     private var drawableSize: CGSize = .zero
 
-    /// Punkten kameran kretsar kring. Är fotografens medelpunkt känd står den
-    /// fast; annars vandrar den med lådan medan filen läses.
+    /// Punkten kameran kretsar kring när den kretsar. Är fotografens medelpunkt
+    /// känd står den fast; annars vandrar den med lådan medan filen läses.
     private var center = SIMD3<Float>(repeating: 0)
     private var anchored = false
-    /// Se `SplatRoomView.asAuthored`.
+    /// Var kameran står när den går. Startar där fotografen stod, vilket är fri
+    /// luft per definition — någon har gått där.
+    private var eye = SIMD3<Float>(repeating: 0)
+    /// Se `SplatRoomView.asAuthored` och `.roaming`.
     private var asAuthored = false
+    private var roaming = false
+    /// Se `SplatRoomView.layers`.
+    private var layers: SplatRoomView.Layers = .both
     private var lowest: SIMD3<Float>?
     private var highest: SIMD3<Float>?
+    /// Var det står något. Växer medan filen läses, se `occupancy`.
+    private var occupied = Set<Int64>()
     private var yaw: Float = 0
     private var pitch: Float = 0
     private var distance: Float = 6
@@ -161,18 +288,25 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     /// mellan mesh och splat inte hoppar.
     private static let fieldOfView: Float = 60 * .pi / 180
 
-    /// Hur långt ut mot väggen kameran får gå, som andel av vägen dit.
+    /// Hur långt bort `clearance` letar efter föremål, i meter.
     ///
-    /// Meshen går att titta på utifrån — den är en yta och ser likadan ut från
-    /// båda hållen. Splatten gör det inte. Den är passad mot foton tagna inne i
-    /// rummet, och utanför väggen tittar man på baksidan av ytor som ingen
-    /// kamera sett: ett mjölkigt moln med regnbågskanter, vilket är precis vad
-    /// vyn visade när kameran ställdes 1,9 rumsradier ut.
+    /// Talet är mätt: under skanningen höll telefonen 0,86 m till närmaste yta
+    /// som median och 0,56 m som tiondepercentil, och bara 0,7 % av de 267
+    /// fotona togs närmare än 30 cm. Närmare än så finns alltså inget foto att
+    /// luta sig mot, och det var det som gjorde den gamla kretsande banan
+    /// trasig: 20,6 % av lägena den kunde nå låg innanför tre decimeter.
     ///
-    /// Uppmätt på ett riktigt rum: fotona togs inom 1,5 m från sin egen
-    /// medelpunkt medan rummet mäter 3,6 m i radie. Det är alltså bara den
-    /// innersta tredjedelen splatten någonsin blivit visad.
-    private static let reach: Float = 0.35
+    /// Men avståndet är inte längre en SPÄRR, bara en skala att jämföra lägen
+    /// med. Se `walk`.
+    private static let margin: Float = 0.4
+
+    /// Hur långt utanför rummets låda kameran får backa, i meter.
+    ///
+    /// Att kunna dra sig ut och se rummet uppifrån är halva behållningen, och
+    /// med den uppmätta ytan bakom splatten finns det något att se därifrån.
+    /// Taket är kvar för att en splat sedd från andra sidan gatan bara är ett
+    /// moln — och för att man ska hitta tillbaka in.
+    private static let reach: Float = 2.5
 
     /// Läser filen utanför huvudtråden och lämnar över den bit för bit.
     ///
@@ -185,13 +319,25 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
                url: URL,
                standingAt viewpoint: SIMD3<Float>?,
                asAuthored: Bool = false,
-               onLoad: @escaping @MainActor (Result<Int, Error>) -> Void) {
+               roaming: Bool = false,
+               backdrop: TexturedMesh? = nil,
+               backdropTextureURL: URL? = nil,
+               onLoad: @escaping @MainActor (Result<SplatRoomView.Loaded, Error>) -> Void) {
         guard let device = view.device else { return }
         queue = device.makeCommandQueue()
         self.asAuthored = asAuthored
+        self.roaming = roaming
+
+        if let backdrop {
+            self.backdrop = BackdropRenderer(device: device,
+                                             colorFormat: view.colorPixelFormat,
+                                             depthFormat: view.depthStencilPixelFormat)
+            self.backdrop?.load(backdrop, textureURL: backdropTextureURL)
+        }
 
         if let viewpoint {
             center = viewpoint
+            eye = viewpoint
             anchored = true
         }
 
@@ -207,30 +353,37 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
                                                  sampleCount: sampleCount,
                                                  maxViewCount: 1,
                                                  maxSimultaneousRenders: 3)
-                var pending: [SplatPoint] = []
                 var loaded = 0
+                // Graden filen bär. Läses ur punkterna som de kom, innan
+                // `matchingTraining` rört dem.
+                var degree = 0
 
-                for try await batch in try await AutodetectSceneReader(url).read() {
-                    pending.append(contentsOf: batch)
-                    guard pending.count >= chunkSize else { continue }
-
+                // Klumpen är färdig: lämna den till GPU:n och släpp punkterna.
+                func take(_ pending: [SplatPoint]) async throws {
                     loaded += pending.count
+                    degree = max(degree, Int(pending[0].color.shDegree.rawValue))
                     await renderer.addChunk(try SplatChunk(
                         device: device,
                         from: asAuthored ? pending : matchingTraining(pending)))
-                    await self?.show(renderer, covering: bounds(
-                        of: pending, trimming: asAuthored ? 0.1 : 0))
-                    pending.removeAll(keepingCapacity: true)
+                    await self?.show(renderer,
+                                     covering: bounds(of: pending,
+                                                      trimming: asAuthored ? 0.1 : 0),
+                                     filling: roaming ? [] : occupancy(of: pending))
                 }
-                if !pending.isEmpty {
-                    loaded += pending.count
-                    await renderer.addChunk(try SplatChunk(
-                        device: device,
-                        from: asAuthored ? pending : matchingTraining(pending)))
-                    await self?.show(renderer, covering: bounds(
-                        of: pending, trimming: asAuthored ? 0.1 : 0))
+
+                if url.pathExtension.lowercased() == "spz" {
+                    _ = try await SPZStream.read(url, batch: chunkSize, handle: take)
+                } else {
+                    var pending: [SplatPoint] = []
+                    for try await batch in try await AutodetectSceneReader(url).read() {
+                        pending.append(contentsOf: batch)
+                        guard pending.count >= chunkSize else { continue }
+                        try await take(pending)
+                        pending.removeAll(keepingCapacity: true)
+                    }
+                    if !pending.isEmpty { try await take(pending) }
                 }
-                await onLoad(.success(loaded))
+                await onLoad(.success(.init(count: loaded, shDegree: degree)))
             } catch {
                 await onLoad(.failure(error))
             }
@@ -240,7 +393,14 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     func setCamera(yaw: Float, pitch: Float, distance: Float) {
         self.yaw = yaw
         self.pitch = pitch
+        // Kretsar kameran är `distance` var den står. Går den är avståndet i
+        // stället en ratt: det den ÄNDRAS med blir steg framåt längs blicken.
+        if !orbiting { walk(self.distance - distance) }
         self.distance = distance
+    }
+
+    func setLayers(_ layers: SplatRoomView.Layers) {
+        self.layers = layers
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -253,25 +413,56 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
               drawableSize.width > 0, drawableSize.height > 0,
               let commands = queue.makeCommandBuffer() else { return }
 
+        let projection = Self.perspective(fieldOfView: Self.fieldOfView,
+                                          aspect: Float(drawableSize.width / drawableSize.height))
+        let view32 = viewMatrix
         let viewport = SplatRenderer.ViewportDescriptor(
             viewport: MTLViewport(originX: 0, originY: 0,
                                   width: drawableSize.width, height: drawableSize.height,
                                   znear: 0, zfar: 1),
-            projectionMatrix: Self.perspective(fieldOfView: Self.fieldOfView,
-                                               aspect: Float(drawableSize.width / drawableSize.height)),
-            viewMatrix: viewMatrix,
+            projectionMatrix: projection,
+            viewMatrix: view32,
             screenSize: SIMD2(Int(drawableSize.width), Int(drawableSize.height)))
 
-        // Kastar när sorteringen inte hunnit klart. Då hoppar vi över bildrutan
-        // hellre än att visa gaussarna i fel ordning.
-        guard let rendered = try? renderer.render(viewports: [viewport],
-                                                  colorTexture: view.multisampleColorTexture ?? drawable.texture,
-                                                  colorStoreAction: view.multisampleColorTexture == nil
-                                                      ? .store : .multisampleResolve,
-                                                  depthTexture: view.depthStencilTexture,
-                                                  rasterizationRateMap: nil,
-                                                  renderTargetArrayLength: 0,
-                                                  to: commands), rendered else { return }
+        // Med bakgrund ritas rummet i tre steg: ytan i bilden, splatten i en
+        // egen ruta, och ruta över bild. Utan bakgrund går splatten rakt in i
+        // bilden som förr — MetalSplatter rensar den ändå.
+        let usesBackdrop = layers != .splats && backdrop?.isReady == true
+        let target = usesBackdrop
+            ? backdrop?.splatTarget(size: drawableSize, format: view.colorPixelFormat)
+            : nil
+        // Ingen yta att visa och splatten avstängd: låt förra bildrutan stå
+        // kvar hellre än att visa en orensad ruta.
+        guard layers != .mesh || usesBackdrop else { return }
+
+        if usesBackdrop, let backdrop {
+            backdrop.drawMesh(into: commands,
+                              color: view.multisampleColorTexture ?? drawable.texture,
+                              depth: view.depthStencilTexture,
+                              viewProjection: projection * view32,
+                              eye: cameraPosition)
+        }
+
+        if layers != .mesh {
+            // Kastar när sorteringen inte hunnit klart. Då hoppar vi över
+            // bildrutan hellre än att visa gaussarna i fel ordning.
+            guard let rendered = try? renderer.render(
+                viewports: [viewport],
+                colorTexture: target ?? view.multisampleColorTexture ?? drawable.texture,
+                colorStoreAction: target != nil || view.multisampleColorTexture == nil
+                    ? .store : .multisampleResolve,
+                depthTexture: view.depthStencilTexture,
+                rasterizationRateMap: nil,
+                renderTargetArrayLength: 0,
+                to: commands), rendered else { return }
+
+            if let backdrop, let target {
+                backdrop.composite(target, into: commands,
+                                   color: view.multisampleColorTexture ?? drawable.texture,
+                                   storeAction: view.multisampleColorTexture == nil
+                                       ? .store : .multisampleResolve)
+            }
+        }
 
         commands.present(drawable)
         commands.commit()
@@ -279,31 +470,42 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
 
     // MARK: - Kameran
 
-    /// Kameran kretsar kring `center`, samma bana som `RoomSceneController`
-    /// — men stannar innanför väggarna. Se `reach`.
+    /// Riktningen blicken pekar åt, ur `yaw` och `pitch`.
+    private var heading: SIMD3<Float> {
+        -SIMD3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw))
+    }
+
+    /// Var kameran står, oavsett om den kretsar eller går.
+    private var cameraPosition: SIMD3<Float> {
+        orbiting ? center - range * heading : eye
+    }
+
+    /// Vår egen splat ses INIFRÅN: kameran står i rummet och blicken svänger.
+    /// En främmande fil kretsar som förr — den är oftast ett föremål man ska gå
+    /// runt, och `BenchmarkSplatView` jämför träningskörningar ur samma bana.
     private var viewMatrix: simd_float4x4 {
-        let direction = SIMD3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw))
-        let eye = center + range(along: direction) * direction
         // Splatten ligger i ARKits värld, Y uppåt. Vanliga 3DGS-filer kommer
         // från COLMAP och står upp och ner — därför vänder MetalSplatters
         // exempelapp på dem, och därför vänder vi en främmande fil men inte vår.
-        return Self.look(from: eye, at: center,
-                         up: SIMD3(0, asAuthored ? -1 : 1, 0))
+        guard !orbiting else {
+            let eye = center - range * heading
+            return Self.look(from: eye, at: center,
+                             up: SIMD3(0, asAuthored ? -1 : 1, 0))
+        }
+        return Self.look(from: eye, at: eye + heading, up: SIMD3(0, 1, 0))
     }
 
-    /// Var kameran hamnar åt ett håll.
-    ///
-    /// För vår egen splat är `distance` meter, för den är mätt i ett rum vars
-    /// storlek vi känner — och kameran hålls innanför väggarna, se `reach`.
+    /// Kretsar kameran kring en punkt i stället för att stå i rummet?
+    private var orbiting: Bool { asAuthored || roaming }
+
+    /// Hur långt ut kameran ställs när den kretsar.
     ///
     /// En främmande fil har varken kända väggar eller känd skala: COLMAP väljer
-    /// sin enhet fritt, och scenen kan vara ett föremål man ska gå runt. Utan
-    /// given målpunkt räknas `distance` därför i scenradier i stället, så att
-    /// samma startvärde ramar in vad som helst. Är målpunkten given kommer den
-    /// ur datasetets egna kameror, och då är skalan känd igen.
-    private func range(along direction: SIMD3<Float>) -> Float {
-        guard !asAuthored else { return anchored ? distance : distance * radius }
-        return min(distance, reach(along: direction))
+    /// sin enhet fritt. Utan given målpunkt räknas `distance` därför i
+    /// scenradier, så att samma startvärde ramar in vad som helst. Är målpunkten
+    /// given kommer den ur datasetets egna kameror, och då är skalan känd igen.
+    private var range: Float {
+        asAuthored && !anchored ? distance * radius : distance
     }
 
     /// Halva scenens längsta sida, aldrig noll.
@@ -312,20 +514,79 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
         return max((highest - lowest).max() / 2, 0.001)
     }
 
-    /// Så långt kameran får gå åt ett håll innan den är utanför rummet.
+    /// Flyttar kameran framåt eller bakåt, om den får plats där.
     ///
-    /// Rummets låda växer medan filen läses, så gränsen räknas om varje
-    /// bildruta i stället för att sparas.
-    private func reach(along direction: SIMD3<Float>) -> Float {
-        guard let lowest, let highest else { return distance }
+    /// Zoom är gång: `distance` minskar när man nyper isär, och då går kameran
+    /// framåt längs blicken. Att i stället kretsa kring en fast punkt var det som
+    /// gjorde rummet trasigt att vrida i. Uppmätt låg **20,6 % av de lägen den
+    /// gamla banan kunde nå närmare än 30 cm från en yta, mot 0,7 % av fotona** —
+    /// kameran svepte rakt genom soffan, och inifrån en soffa har ingen
+    /// fotograferat. Det såg ut som trasig geometri men var en trasig kamerabana.
+    ///
+    /// Med spärren finns 106 m³ att gå i och 7,3 m tvärs rummet. Med den fasta
+    /// punkten kvar hade det blivit 10 cm: nästan varje håll är blockerat på
+    /// nära håll, och det är därför den gamla vyn bara dög från vissa vinklar.
+    ///
+    /// Spärren låg först på fyra decimeter, för då var ett hål i splatten
+    /// genomsikt rakt ut ur rummet och allt nära såg sönderfallet ut. Med den
+    /// uppmätta ytan bakom splatten — se `BackdropRenderer` — finns alltid något
+    /// solidt att titta på, och då är det bara att gå IN i en möbel som är
+    /// meningslöst. Kvar är därför ett enda kubsteg, femton centimeter: nära nog
+    /// att sätta näsan mot bänkskivan, långt nog att inte hamna inuti den.
+    private func walk(_ steps: Float) {
+        guard steps != 0 else { return }
+        let target = eye + steps * heading
+        guard inside(target) else { return }
 
-        var wall = Float.greatestFiniteMagnitude
-        for axis in 0..<3 where abs(direction[axis]) > 1e-5 {
-            let side = direction[axis] > 0 ? highest[axis] : lowest[axis]
-            wall = min(wall, (side - center[axis]) / direction[axis])
+        // Inte bara "är målet fritt" utan också "är målet minst lika fritt".
+        // Uppmätt ligger fotografens medelpunkt — den vi STARTAR i — själv tätt
+        // intill en yta, och med en ren ja/nej-spärr satt kameran fast direkt vid
+        // start. Den här regeln släpper ut ur ett trångt läge men aldrig in i ett
+        // trängre.
+        let room = clearance(at: target)
+        guard room >= 1 || room >= clearance(at: eye) else { return }
+        eye = target
+    }
+
+    /// Är punkten innanför rummets låda, plus `reach`?
+    ///
+    /// Väggarna är gaussare och fångas av `clearance`. Lådan behövs ändå: genom
+    /// ett fönster eller en öppen dörr finns inga gaussare alls, och utan den
+    /// här spärren skulle kameran gå iväg tills rummet var en prick.
+    private func inside(_ point: SIMD3<Float>) -> Bool {
+        guard let lowest, let highest else { return true }
+        let slack = SIMD3<Float>(repeating: Self.reach)
+        return all(point .>= lowest - slack) && all(point .<= highest + slack)
+    }
+
+    /// Hur många kubsteg det är till närmaste föremål, som mest `margin`.
+    ///
+    /// Ett tal och inte ett ja/nej, för att `walk` ska kunna jämföra två lägen.
+    /// Alla punkter med minst `margin` fritt runt sig får samma toppvärde, så
+    /// kameran rör sig obehindrat i det öppna rummet och märker spärren först
+    /// när den närmar sig något.
+    ///
+    /// Kuberna runt punkten söks av i stället för att kartan utvidgas en gång:
+    /// utvidgningen hade kostat en dryg miljon insättningar under inläsningen,
+    /// och det här är ett par hundra uppslagningar bara när någon faktiskt går.
+    private func clearance(at point: SIMD3<Float>) -> Int {
+        let reach = Int(ceil(Self.margin / cellSize))
+        guard !occupied.isEmpty else { return reach }
+        guard !occupied.contains(cell(containing: point)) else { return 0 }
+
+        for step in 1...reach {
+            for x in -step...step {
+                for y in -step...step {
+                    for z in -step...step where max(abs(x), max(abs(y), abs(z))) == step {
+                        let offset = SIMD3(Float(x), Float(y), Float(z)) * cellSize
+                        if occupied.contains(cell(containing: point + offset)) {
+                            return step - 1
+                        }
+                    }
+                }
+            }
         }
-        // Aldrig ända in i mitten: kameran och målpunkten får inte sammanfalla.
-        return max(wall * Self.reach, 0.1)
+        return reach
     }
 
     /// Tar emot en färdig bit: renderaren börjar rita och rummets låda växer.
@@ -333,14 +594,23 @@ final class SplatSceneCoordinator: NSObject, MTKViewDelegate {
     /// Att lådan växer efter hand går bara ihop för att servern skriver filen i
     /// slumpvis ordning — låg gaussarna sorterade skulle mitten vandra genom
     /// hela laddningen och kameran svänga med.
-    private func show(_ renderer: SplatRenderer, covering box: (SIMD3<Float>, SIMD3<Float>)) {
+    private func show(_ renderer: SplatRenderer,
+                      covering box: (SIMD3<Float>, SIMD3<Float>),
+                      filling cells: Set<Int64>) {
         self.renderer = renderer
+        occupied.formUnion(cells)
 
         let low = simd_min(lowest ?? box.0, box.0)
         let high = simd_max(highest ?? box.1, box.1)
         lowest = low
         highest = high
-        if !anchored { center = (low + high) / 2 }
+        // Utan fotografens medelpunkt finns inget bättre än lådans mitt. Den kan
+        // ligga i en möbel — därför är `standingAt` att föredra, se
+        // `RoomViewerView.viewpoint`.
+        if !anchored {
+            center = (low + high) / 2
+            eye = center
+        }
     }
 
     private static func look(from eye: SIMD3<Float>,

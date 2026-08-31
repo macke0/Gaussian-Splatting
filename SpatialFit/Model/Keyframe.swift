@@ -96,6 +96,27 @@ struct Keyframe: Codable, Sendable, Identifiable, Equatable {
         }
     }
 
+    /// Motsatsen till `project`: en punkt i djupkartan tillbaka ut i världen.
+    ///
+    /// Det är så man får veta VAD kameran såg, inte bara om en känd yta råkade
+    /// hamna i bild. Under skanningen finns ingen färdig mesh att fråga, så
+    /// täckningen måste byggas ur djupet självt.
+    ///
+    /// - Parameter distance: LiDAR-avståndet, mätt rakt framåt längs kamerans
+    ///   blick — inte fågelvägen till punkten.
+    func unproject(depthColumn: Int, depthRow: Int, distance: Float) -> SIMD3<Float> {
+        // Djupkartan är grövre än bilden men täcker samma synfält, så pixeln
+        // skalas upp innan `intrinsics` vänds.
+        let pixel = SIMD2(Float(depthColumn) + 0.5, Float(depthRow) + 0.5)
+            / SIMD2(Float(depthSize.x), Float(depthSize.y)) * imageSize
+        let ray = intrinsics.inverse * SIMD3<Float>(pixel.x, pixel.y, 1)
+
+        // Tillbaka från hålkamera till ARKits kamerarum: y upp, z bakåt.
+        let camera = SIMD4<Float>(ray.x * distance, -ray.y * distance, -distance, 1)
+        let world = worldFromCamera * camera
+        return SIMD3(world.x, world.y, world.z)
+    }
+
     /// Index i djupkartan för en projicerad pixel.
     func depthIndex(for pixel: SIMD2<Float>) -> Int {
         let column = Int((pixel.x / imageSize.x) * Float(depthSize.x))
