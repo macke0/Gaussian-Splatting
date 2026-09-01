@@ -95,13 +95,33 @@ vertex CompositeVertex compositeVertex(uint id [[vertex_id]])
     return out;
 }
 
-/// Splattens ruta rakt av. Färgen är redan multiplicerad med sin alfa —
-/// MetalSplatter blandar med `one` och `oneMinusSourceAlpha` — så den här
-/// passagen måste blanda likadant, annars blir de täta ytorna dubbelt lagda.
+/// Vid hur lite egen täckning splatten får stå ensam. Under tröskeln tonas
+/// meshen in i proportion, över den är den helt borta.
+///
+/// Varför en tröskel och inte rakt `1 - alfa`: rummet är fullt av gaussare med
+/// nästan noll alfa, och var och en av dem släpper igenom nästan hela
+/// bakgrunden. Staplade läcker meshens ljushet upp genom diset och lägger sig
+/// som utblåsta högdagrar på ytor splatten redan beskriver. Med tröskeln
+/// räcker det att några få dis-lager överlappar för att bakgrunden ska tystna.
+constant float COVERAGE = 0.35;
+
+/// Lägger splattens ruta över meshen. Blandningen görs här i stället för i
+/// rörledningen, för bara här går det att se hur mycket splatten själv täcker.
+///
+/// `mesh` är bildens nuvarande innehåll — ytan som redan ritats. Att läsa den
+/// är tillåtet därför att passagen laddar färgbufferten (`loadAction = .load`)
+/// i stället för att rensa den.
+///
+/// Splattens färg är redan multiplicerad med sin alfa, så den läggs på rakt.
+/// Meshen viktas ned mot noll i stället för mot `1 - alfa`: bakgrunden ska
+/// fylla HÅL, inte lysa igenom det splatten redan målat.
 fragment float4 compositeFragment(CompositeVertex in [[stage_in]],
+                                  float4 mesh [[color(0)]],
                                   texture2d<float> splats [[texture(0)]])
 {
     constexpr sampler nearest(mag_filter::nearest, min_filter::nearest,
                               address::clamp_to_edge);
-    return splats.sample(nearest, in.coordinate);
+    float4 splat = splats.sample(nearest, in.coordinate);
+    float hole = saturate(1.0 - splat.a / COVERAGE);
+    return float4(splat.rgb + mesh.rgb * hole, 1.0);
 }

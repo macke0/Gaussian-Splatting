@@ -60,34 +60,25 @@ final class BackdropRenderer {
         guard let library = try? device.makeDefaultLibrary(bundle: .main) else { return nil }
         self.device = device
 
+        // Ingen av rörledningarna blandar i hårdvaran. Hopfogningen väger
+        // samman splatten och ytan själv i `compositeFragment`, för bara där
+        // går det att se hur mycket splatten faktiskt täcker.
         func pipeline(_ vertex: String, _ fragment: String,
-                      depth: MTLPixelFormat, blending: Bool) -> MTLRenderPipelineState? {
+                      depth: MTLPixelFormat) -> MTLRenderPipelineState? {
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = library.makeFunction(name: vertex)
             descriptor.fragmentFunction = library.makeFunction(name: fragment)
             descriptor.colorAttachments[0].pixelFormat = colorFormat
             descriptor.depthAttachmentPixelFormat = depth
-            if blending {
-                // Samma blandning som MetalSplatter: färgen kommer redan
-                // multiplicerad med sin alfa.
-                let attachment = descriptor.colorAttachments[0]!
-                attachment.isBlendingEnabled = true
-                attachment.rgbBlendOperation = .add
-                attachment.alphaBlendOperation = .add
-                attachment.sourceRGBBlendFactor = .one
-                attachment.sourceAlphaBlendFactor = .one
-                attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-            }
             return try? device.makeRenderPipelineState(descriptor: descriptor)
         }
 
         guard let textured = pipeline("backdropVertex", "backdropTexturedFragment",
-                                      depth: depthFormat, blending: false),
+                                      depth: depthFormat),
               let plain = pipeline("backdropVertex", "backdropPlainFragment",
-                                   depth: depthFormat, blending: false),
+                                   depth: depthFormat),
               let composite = pipeline("compositeVertex", "compositeFragment",
-                                       depth: .invalid, blending: true) else { return nil }
+                                       depth: .invalid) else { return nil }
 
         let descriptor = MTLDepthStencilDescriptor()
         // `SplatSceneCoordinator.perspective` lägger nära planet på 0 och
@@ -198,7 +189,8 @@ final class BackdropRenderer {
         encoder.endEncoding()
     }
 
-    /// Lägger splattens ruta över det som redan ritats.
+    /// Lägger splattens ruta över det som redan ritats. Färgbufferten LADDAS,
+    /// inte rensas — hopfogningen läser ytan under sig ur den.
     func composite(_ splats: MTLTexture,
                    into commands: MTLCommandBuffer,
                    color: MTLTexture,
