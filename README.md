@@ -8,6 +8,11 @@ It is unfinished, and it partly works. Close to where the photos were taken, the
 
 > **Scope.** The splat is the *appearance* layer only. Measurements in the app come from LiDAR geometry, never from the splat. The trainer is [gsplat](https://github.com/nerfstudio-project/gsplat) and the on-phone rasterizer is [MetalSplatter](https://github.com/scier/MetalSplatter). The work in this repo is everything around them: capture, a LiDAR-constrained training loop, the file format, the loader, the colour-space fix, and the measurement tooling.
 
+<p align="center">
+  <img src="docs/room-splat.png" width="320" alt="A living room rendered as a Gaussian splat on an iPhone">
+</p>
+<p align="center"><sub>A real living room, trained from a phone scan and rendered live on the iPhone, from a work-in-progress build. The room's layout, furniture and lighting come through. Fine texture is painterly, there is haze near the edges, and thinly covered areas such as the stairs on the left smear.</sub></p>
+
 ## Pipeline
 
 ```
